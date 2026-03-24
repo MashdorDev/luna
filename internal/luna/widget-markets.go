@@ -4,9 +4,7 @@ import (
 	"context"
 	"fmt"
 	"html/template"
-	"log/slog"
 	"math"
-	"net/http"
 	"sort"
 	"strings"
 	"time"
@@ -21,11 +19,17 @@ type marketsWidget struct {
 	ChartLinkTemplate  string          `yaml:"chart-link-template"`
 	SymbolLinkTemplate string          `yaml:"symbol-link-template"`
 	Sort               string          `yaml:"sort-by"`
+	Provider           string          `yaml:"provider"`
+	APIKey             string          `yaml:"api-key"`
 	Markets            marketList      `yaml:"-"`
 }
 
 func (widget *marketsWidget) initialize() error {
 	widget.withTitle("Markets").withCacheDuration(time.Hour)
+
+	if widget.Provider == "" {
+		widget.Provider = "yahoo"
+	}
 
 	// legacy support, remove in v0.10.0
 	if len(widget.MarketRequests) == 0 {
@@ -48,8 +52,13 @@ func (widget *marketsWidget) initialize() error {
 }
 
 func (widget *marketsWidget) update(ctx context.Context) {
-	markets, err := fetchMarketsDataFromYahoo(widget.MarketRequests)
+	provider, err := getMarketProvider(widget.Provider)
+	if err != nil {
+		widget.canContinueUpdateAfterHandlingErr(err)
+		return
+	}
 
+	markets, err := provider.FetchMarkets(widget.MarketRequests, widget.APIKey)
 	if !widget.canContinueUpdateAfterHandlingErr(err) {
 		return
 	}
@@ -66,6 +75,10 @@ func (widget *marketsWidget) update(ctx context.Context) {
 func (widget *marketsWidget) Render() template.HTML {
 	return widget.renderTemplate(widget, marketsWidgetTemplate)
 }
+
+// ============================================================
+// Shared types
+// ============================================================
 
 type marketRequest struct {
 	CustomName string `yaml:"name"`
@@ -98,109 +111,8 @@ func (t marketList) sortByChange() {
 	})
 }
 
-type marketResponseJson struct {
-	Chart struct {
-		Result []struct {
-			Meta struct {
-				Currency           string  `json:"currency"`
-				Symbol             string  `json:"symbol"`
-				RegularMarketPrice float64 `json:"regularMarketPrice"`
-				ChartPreviousClose float64 `json:"chartPreviousClose"`
-				ShortName          string  `json:"shortName"`
-				PriceHint          int     `json:"priceHint"`
-			} `json:"meta"`
-			Indicators struct {
-				Quote []struct {
-					Close []float64 `json:"close,omitempty"`
-				} `json:"quote"`
-			} `json:"indicators"`
-		} `json:"result"`
-	} `json:"chart"`
-}
-
 // TODO: allow changing chart time frame
 const marketChartDays = 21
-
-func fetchMarketsDataFromYahoo(marketRequests []marketRequest) (marketList, error) {
-	requests := make([]*http.Request, 0, len(marketRequests))
-
-	for i := range marketRequests {
-		request, _ := http.NewRequest("GET", fmt.Sprintf("https://query1.finance.yahoo.com/v8/finance/chart/%s?range=1mo&interval=1d", marketRequests[i].Symbol), nil)
-		setBrowserUserAgentHeader(request)
-		requests = append(requests, request)
-	}
-
-	job := newJob(decodeJsonFromRequestTask[marketResponseJson](defaultHTTPClient), requests)
-	responses, errs, err := workerPoolDo(job)
-	if err != nil {
-		return nil, fmt.Errorf("%w: %v", errNoContent, err)
-	}
-
-	markets := make(marketList, 0, len(responses))
-	var failed int
-
-	for i := range responses {
-		if errs[i] != nil {
-			failed++
-			slog.Error("Failed to fetch market data", "symbol", marketRequests[i].Symbol, "error", errs[i])
-			continue
-		}
-
-		response := responses[i]
-
-		if len(response.Chart.Result) == 0 {
-			failed++
-			slog.Error("Market response contains no data", "symbol", marketRequests[i].Symbol)
-			continue
-		}
-
-		result := &response.Chart.Result[0]
-		prices := result.Indicators.Quote[0].Close
-
-		if len(prices) > marketChartDays {
-			prices = prices[len(prices)-marketChartDays:]
-		}
-
-		previous := result.Meta.RegularMarketPrice
-
-		if len(prices) >= 2 && prices[len(prices)-2] != 0 {
-			previous = prices[len(prices)-2]
-		}
-
-		points := svgPolylineCoordsFromYValues(100, 50, maybeCopySliceWithoutZeroValues(prices))
-
-		currency, exists := currencyToSymbol[strings.ToUpper(result.Meta.Currency)]
-		if !exists {
-			currency = result.Meta.Currency
-		}
-
-		markets = append(markets, market{
-			marketRequest: marketRequests[i],
-			Price:         result.Meta.RegularMarketPrice,
-			Currency:      currency,
-			PriceHint:     result.Meta.PriceHint,
-			Name: ternary(marketRequests[i].CustomName == "",
-				result.Meta.ShortName,
-				marketRequests[i].CustomName,
-			),
-			PercentChange: percentChange(
-				result.Meta.RegularMarketPrice,
-				previous,
-			),
-			SvgChartPoints: points,
-		})
-	}
-
-	if len(markets) == 0 {
-		return nil, errNoContent
-	}
-
-	if failed > 0 {
-		return markets, fmt.Errorf("%w: could not fetch data for %d market(s)", errPartialContent, failed)
-	}
-
-	return markets, nil
-}
 
 var currencyToSymbol = map[string]string{
 	"USD": "$",
@@ -225,4 +137,28 @@ var currencyToSymbol = map[string]string{
 	"DKK": "kr",
 	"PLN": "zł",
 	"PHP": "₱",
+	"ILS": "₪",
+	"MXN": "Mex$",
+	"COP": "Col$",
+	"THB": "฿",
+	"TWD": "NT$",
+	"MYR": "RM",
+}
+
+func resolveCurrencySymbol(code string) string {
+	symbol, exists := currencyToSymbol[strings.ToUpper(code)]
+	if !exists {
+		return code
+	}
+	return symbol
+}
+
+func marketsFailed(total, failed int, markets marketList) (marketList, error) {
+	if len(markets) == 0 {
+		return nil, errNoContent
+	}
+	if failed > 0 {
+		return markets, fmt.Errorf("%w: could not fetch data for %d market(s)", errPartialContent, failed)
+	}
+	return markets, nil
 }

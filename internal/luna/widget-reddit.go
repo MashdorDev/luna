@@ -2,6 +2,9 @@ package luna
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"html"
@@ -9,6 +12,8 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -92,6 +97,10 @@ func (widget *redditWidget) initialize() error {
 		withTitleURL("https://www.reddit.com/r/" + widget.Subreddit + "/").
 		withCacheDuration(30 * time.Minute)
 
+	// show last-known posts immediately after a restart; the rate-limited
+	// live refresh replaces them on the normal schedule
+	widget.loadCachedPosts()
+
 	return nil
 }
 
@@ -108,6 +117,74 @@ var (
 	// subsequent updates stop wasting a request on the doomed JSON call
 	redditJSONBlocked atomic.Bool
 )
+
+// Reddit fills at only one widget per minute (rate limit above), so a restart
+// used to mean up to an hour of empty tabs. Persist each widget's last posts
+// to disk and load them at startup — the dashboard comes back with last-known
+// content immediately and refreshes on the normal schedule.
+const redditPostsCacheMaxAge = 24 * time.Hour
+
+func redditCacheDir() string {
+	if dir := os.Getenv("LUNA_CACHE_DIR"); dir != "" {
+		return dir
+	}
+	return "/app/cache"
+}
+
+type redditPostsCacheFile struct {
+	SavedAt time.Time     `json:"saved_at"`
+	Posts   forumPostList `json:"posts"`
+}
+
+func (widget *redditWidget) postsCachePath() string {
+	key := fmt.Sprintf("%s|%s|%s|%s|%d",
+		widget.Subreddit, widget.SortBy, widget.TopPeriod, widget.Search, widget.Limit)
+	sum := sha256.Sum256([]byte(key))
+	return filepath.Join(redditCacheDir(), "reddit-"+hex.EncodeToString(sum[:8])+".json")
+}
+
+func (widget *redditWidget) loadCachedPosts() {
+	data, err := os.ReadFile(widget.postsCachePath())
+	if err != nil {
+		return
+	}
+
+	var cached redditPostsCacheFile
+	if json.Unmarshal(data, &cached) != nil ||
+		len(cached.Posts) == 0 ||
+		time.Since(cached.SavedAt) > redditPostsCacheMaxAge {
+		return
+	}
+
+	widget.Posts = cached.Posts
+	widget.ContentAvailable = true
+
+	// seed seen-post IDs so the first live refresh doesn't notify about
+	// posts that were already on screen before the restart
+	ids := make(map[string]struct{}, len(cached.Posts))
+	for i := range cached.Posts {
+		if id := cached.Posts[i].ID; id != "" {
+			ids[id] = struct{}{}
+		}
+	}
+	widget.PrevPostIDs = ids
+}
+
+func (widget *redditWidget) saveCachedPosts(posts forumPostList) {
+	path := widget.postsCachePath()
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return
+	}
+
+	data, err := json.Marshal(redditPostsCacheFile{SavedAt: time.Now(), Posts: posts})
+	if err != nil {
+		return
+	}
+
+	if err := os.WriteFile(path, data, 0644); err != nil {
+		slog.Error("Failed to write reddit posts cache", "path", path, "error", err)
+	}
+}
 
 func tryAcquireRedditRequestSlot() bool {
 	redditRequestMu.Lock()
@@ -157,6 +234,7 @@ func (widget *redditWidget) update(ctx context.Context) {
 	widget.notifyOnNewPosts(posts)
 
 	widget.Posts = posts
+	widget.saveCachedPosts(posts)
 }
 
 func (widget *redditWidget) Render() template.HTML {

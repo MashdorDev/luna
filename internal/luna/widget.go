@@ -137,6 +137,8 @@ type widget interface {
 	setID(uint64)
 	handleRequest(w http.ResponseWriter, r *http.Request)
 	setHideHeader(bool)
+	hasContentChanged() bool
+	resetContentChanged()
 }
 
 type cacheType int
@@ -167,6 +169,7 @@ type widgetBase struct {
 	nextUpdate          time.Time        `yaml:"-"`
 	updateRetriedTimes  int              `yaml:"-"`
 	lastRenderedHTML    string           `yaml:"-"`
+	contentHasChanged   bool             `yaml:"-"`
 	notificationPending bool             `yaml:"-"`
 }
 
@@ -206,6 +209,14 @@ func (w *widgetBase) setHideHeader(value bool) {
 	w.HideHeader = value
 }
 
+func (w *widgetBase) hasContentChanged() bool {
+	return w.contentHasChanged
+}
+
+func (w *widgetBase) resetContentChanged() {
+	w.contentHasChanged = false
+}
+
 func (widget *widgetBase) handleRequest(w http.ResponseWriter, r *http.Request) {
 	http.Error(w, "not implemented", http.StatusNotImplemented)
 }
@@ -242,6 +253,7 @@ func (w *widgetBase) renderTemplate(data any, t *template.Template) template.HTM
 	}
 
 	result := w.templateBuffer.String()
+	w.contentHasChanged = err == nil && w.lastRenderedHTML != "" && w.lastRenderedHTML != result
 	if err == nil && w.notificationPending && w.Notifications && NotificationsEnabledForWidget(w.Type) && GenericNotificationsEnabled() && ShouldUseGenericNotifications(w.Type) {
 		if w.lastRenderedHTML != "" && w.lastRenderedHTML != result {
 			displayTitle := w.Title
@@ -259,6 +271,8 @@ func (w *widgetBase) renderTemplate(data any, t *template.Template) template.HTM
 	} else if err == nil && w.notificationPending {
 		w.lastRenderedHTML = result
 		w.notificationPending = false
+	} else if err == nil {
+		w.lastRenderedHTML = result
 	}
 
 	return template.HTML(result)

@@ -6,10 +6,13 @@ import (
 	"fmt"
 	"html"
 	"html/template"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -92,7 +95,51 @@ func (widget *redditWidget) initialize() error {
 	return nil
 }
 
+// Reddit's unauthenticated per-IP token bucket refills at roughly one
+// request per 40s (measured 2026-07: a request after 45s of quiet passes,
+// one 10-20s after another 429s). Allow one reddit fetch per 60s across all
+// widgets; a widget that doesn't get the slot skips its update and stays
+// overdue, so the 15s background ticker drains the queue gradually instead
+// of tripping the limit in one burst.
+var (
+	redditRequestMu     sync.Mutex
+	redditNextRequestAt time.Time
+	// set once the JSON API is confirmed blocked and RSS works, so
+	// subsequent updates stop wasting a request on the doomed JSON call
+	redditJSONBlocked atomic.Bool
+)
+
+func tryAcquireRedditRequestSlot() bool {
+	redditRequestMu.Lock()
+	defer redditRequestMu.Unlock()
+
+	now := time.Now()
+	if now.Before(redditNextRequestAt) {
+		return false
+	}
+	redditNextRequestAt = now.Add(60 * time.Second)
+	return true
+}
+
+// A 429 means the IP is in a penalty state — steady pressure keeps it there.
+// Go fully quiet for a while so the throttle can lift.
+func coolDownRedditRequests() {
+	redditRequestMu.Lock()
+	defer redditRequestMu.Unlock()
+
+	cooldownUntil := time.Now().Add(5 * time.Minute)
+	if cooldownUntil.After(redditNextRequestAt) {
+		redditNextRequestAt = cooldownUntil
+	}
+}
+
 func (widget *redditWidget) update(ctx context.Context) {
+	// app-auth has its own generous quota; only unauthenticated requests
+	// need to be spaced out
+	if !widget.AppAuth.enabled && !tryAcquireRedditRequestSlot() {
+		return
+	}
+
 	posts, err := widget.fetchSubredditPosts()
 	if !widget.canContinueUpdateAfterHandlingErr(err) {
 		return
@@ -209,6 +256,23 @@ func (widget *redditWidget) fetchSubredditPosts() (forumPostList, error) {
 		client = widget.Proxy.client
 	}
 
+	canFallBackToRSS := !app.enabled && widget.RequestURLTemplate == ""
+
+	// once the JSON API is known blocked, go straight to RSS instead of
+	// burning a rate-limit slot on a request that will 403
+	if canFallBackToRSS && redditJSONBlocked.Load() {
+		posts, err := widget.fetchSubredditPostsViaRSS(client, requestURL)
+		if err != nil {
+			slog.Error("Reddit RSS fetch failed", "subreddit", widget.Subreddit, "error", err)
+			// a 429 just means we're pacing through a throttle — stay on RSS
+			if !strings.Contains(err.Error(), "429") {
+				redditJSONBlocked.Store(false) // RSS broke; retry the API next cycle
+			}
+			return nil, err
+		}
+		return posts, nil
+	}
+
 	request, err := http.NewRequest("GET", requestURL, nil)
 	if err != nil {
 		return nil, err
@@ -217,6 +281,22 @@ func (widget *redditWidget) fetchSubredditPosts() (forumPostList, error) {
 
 	responseJson, err := decodeJsonFromRequest[subredditResponseJson](client, request)
 	if err != nil {
+		// Reddit blocks the unauthenticated JSON API from many server IPs but
+		// leaves the RSS feeds open to browser user agents — fall back to RSS
+		// (same listing, no score/comment counts). Mark the API blocked on
+		// 403/429 even if RSS also fails, so later attempts stop burning a
+		// rate-limit slot on the doomed JSON call.
+		if canFallBackToRSS {
+			if strings.Contains(err.Error(), "403") || strings.Contains(err.Error(), "429") {
+				redditJSONBlocked.Store(true)
+			}
+			posts, rssErr := widget.fetchSubredditPostsViaRSS(client, requestURL)
+			if rssErr == nil {
+				redditJSONBlocked.Store(true)
+				return posts, nil
+			}
+			slog.Error("Reddit JSON and RSS fetch failed", "subreddit", widget.Subreddit, "jsonError", err, "rssError", rssErr)
+		}
 		return nil, err
 	}
 
@@ -279,6 +359,68 @@ func (widget *redditWidget) fetchSubredditPosts() (forumPostList, error) {
 		}
 
 		posts = append(posts, forumPost)
+	}
+
+	return posts, nil
+}
+
+func (widget *redditWidget) fetchSubredditPostsViaRSS(client requestDoer, jsonRequestURL string) (forumPostList, error) {
+	requestURL := strings.Replace(jsonRequestURL, ".json?", ".rss?", 1)
+
+	request, err := http.NewRequest("GET", requestURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	setBrowserUserAgentHeader(request)
+
+	response, err := client.Do(request)
+	if err != nil {
+		return nil, err
+	}
+	defer response.Body.Close()
+
+	if response.StatusCode != http.StatusOK {
+		if response.StatusCode == http.StatusTooManyRequests {
+			coolDownRedditRequests()
+		}
+		return nil, fmt.Errorf("unexpected status code %d from %s", response.StatusCode, requestURL)
+	}
+
+	feed, err := feedParser.Parse(response.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	posts := make(forumPostList, 0, len(feed.Items))
+
+	for _, item := range feed.Items {
+		post := forumPost{
+			ID:            item.GUID,
+			Title:         html.UnescapeString(item.Title),
+			DiscussionUrl: item.Link,
+			// RSS has no vote/comment data — negative hides them in templates
+			Score:        -1,
+			CommentCount: -1,
+			TimePosted:   time.Now(),
+		}
+
+		if item.PublishedParsed != nil {
+			post.TimePosted = *item.PublishedParsed
+		} else if item.UpdatedParsed != nil {
+			post.TimePosted = *item.UpdatedParsed
+		}
+
+		if media, ok := item.Extensions["media"]; ok {
+			if thumbnails, ok := media["thumbnail"]; ok && len(thumbnails) > 0 {
+				post.ThumbnailUrl = thumbnails[0].Attrs["url"]
+			}
+		}
+
+		posts = append(posts, post)
+	}
+
+	if len(posts) == 0 {
+		return nil, errNoContent
 	}
 
 	return posts, nil

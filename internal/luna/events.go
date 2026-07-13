@@ -216,7 +216,7 @@ func publishEvent(eventType string, payload any) {
 	// cache recent monitor/custom-api/page events so reconnecting clients can catch up
 	if globalEventHub != nil {
 		key := ""
-		if eventType == "monitor:site_changed" || eventType == "custom-api:data_changed" {
+		if eventType == "monitor:site_changed" || eventType == "custom-api:data_changed" || eventType == "widget:updated" {
 			if payloadMap, ok := payload.(map[string]any); ok {
 				if widgetIDUint, ok := parseWidgetID(payloadMap); ok {
 					key = eventType + "|" + strconv.FormatUint(widgetIDUint, 10)

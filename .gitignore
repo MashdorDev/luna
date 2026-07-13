@@ -3,7 +3,8 @@
 /playground
 /.idea
 /luna*.yml
-luna
-luna.exe
+/luna
+/luna.exe
 *.log
 .env
+/luna-amd64

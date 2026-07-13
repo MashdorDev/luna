@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"html/template"
 	"log"
 	"net/http"
 	"path/filepath"
@@ -257,24 +258,34 @@ func newApplication(c *config) (*application, error) {
 		ticker := time.NewTicker(15 * time.Second)
 		defer ticker.Stop()
 
-		updateWidgetIfNeeded := func(w widget) {
+		updateWidgetIfNeeded := func(w widget, now *time.Time) {
+			// honor each widget's cache duration — update() reschedules
+			// nextUpdate, so without this guard every tick refetches
+			if !w.requiresUpdate(now) {
+				return
+			}
 			if mon, ok := w.(*monitorWidget); ok {
 				mon.update(app.monitorCtx)
 			} else if api, ok := w.(*customAPIWidget); ok {
 				api.update(app.monitorCtx)
+			} else if reddit, ok := w.(*redditWidget); ok {
+				// reddit updates must go through the ticker: page loads
+				// grant only one rate-limit slot per wave, so overdue
+				// widgets would otherwise never drain
+				reddit.update(app.monitorCtx)
 			}
 		}
 
-		var updateWidgetsRecursive func([]widget)
-		updateWidgetsRecursive = func(widgets []widget) {
+		var updateWidgetsRecursive func([]widget, *time.Time)
+		updateWidgetsRecursive = func(widgets []widget, now *time.Time) {
 			for i := range widgets {
 				w := widgets[i]
-				updateWidgetIfNeeded(w)
+				updateWidgetIfNeeded(w, now)
 				// recursively update widgets in containers
 				if group, ok := w.(*groupWidget); ok {
-					updateWidgetsRecursive(group.Widgets)
+					updateWidgetsRecursive(group.Widgets, now)
 				} else if split, ok := w.(*splitColumnWidget); ok {
-					updateWidgetsRecursive(split.Widgets)
+					updateWidgetsRecursive(split.Widgets, now)
 				}
 			}
 		}
@@ -284,12 +295,13 @@ func newApplication(c *config) (*application, error) {
 			case <-app.monitorCtx.Done():
 				return
 			case <-ticker.C:
+				now := time.Now()
 				for _, page := range app.slugToPage {
 					page.mu.Lock()
 					// recursively update head and column widgets
-					updateWidgetsRecursive(page.HeadWidgets)
+					updateWidgetsRecursive(page.HeadWidgets, &now)
 					for c := range page.Columns {
-						updateWidgetsRecursive(page.Columns[c].Widgets)
+						updateWidgetsRecursive(page.Columns[c].Widgets, &now)
 					}
 					page.mu.Unlock()
 				}
@@ -339,6 +351,31 @@ func (p *page) updateOutdatedWidgets() {
 	wg.Wait()
 }
 
+func (p *page) publishChangedWidgets() {
+	var checkWidgets func(widgets []widget)
+	checkWidgets = func(widgets []widget) {
+		for _, w := range widgets {
+			if w.hasContentChanged() {
+				publishEvent("widget:updated", map[string]any{
+					"widget_id": w.GetID(),
+					"slug":      p.Slug,
+				})
+				w.resetContentChanged()
+			}
+			// handle container widgets
+			if group, ok := w.(*groupWidget); ok {
+				checkWidgets(group.Widgets)
+			} else if split, ok := w.(*splitColumnWidget); ok {
+				checkWidgets(split.Widgets)
+			}
+		}
+	}
+	checkWidgets(p.HeadWidgets)
+	for c := range p.Columns {
+		checkWidgets(p.Columns[c].Widgets)
+	}
+}
+
 func (a *application) resolveUserDefinedAssetPath(path string) string {
 	if strings.HasPrefix(path, "/assets/") {
 		return a.Config.Server.BaseURL + path
@@ -355,6 +392,9 @@ type templateData struct {
 	App     *application
 	Page    *page
 	Request templateRequestData
+	// current widget HTML server-rendered into the page shell so the
+	// browser paints content immediately instead of a loading spinner
+	RenderedContent template.HTML
 }
 
 func (a *application) populateTemplateRequestData(data *templateRequestData, r *http.Request) {
@@ -390,6 +430,15 @@ func (a *application) handlePageRequest(w http.ResponseWriter, r *http.Request) 
 	}
 	a.populateTemplateRequestData(&data.Request, r)
 
+	// serve whatever widget content is in memory right now — stale is fine,
+	// the background update below pushes freshness in via SSE. This is what
+	// removes the loading spinner: the shell arrives with content in it.
+	if content, contentErr := page.renderContent(); contentErr == nil {
+		data.RenderedContent = template.HTML(content)
+	}
+
+	page.updateOutdatedWidgetsInBackground()
+
 	var responseBytes bytes.Buffer
 	err := pageTemplate.Execute(&responseBytes, data)
 	if err != nil {
@@ -399,6 +448,58 @@ func (a *application) handlePageRequest(w http.ResponseWriter, r *http.Request) 
 	}
 
 	w.Write(responseBytes.Bytes())
+}
+
+// renderContent returns the page's content HTML. It prefers rendering the
+// live widget state, but if a background update currently holds the page
+// lock it serves the last rendered copy instead of blocking the request.
+func (p *page) renderContent() ([]byte, error) {
+	renderLocked := func() ([]byte, error) {
+		defer p.mu.Unlock()
+
+		var buf bytes.Buffer
+		if err := pageContentTemplate.Execute(&buf, templateData{Page: p}); err != nil {
+			return nil, err
+		}
+
+		content := buf.Bytes()
+		cached := make([]byte, len(content))
+		copy(cached, content)
+		p.renderedContentCache.Store(&cached)
+
+		return content, nil
+	}
+
+	if p.mu.TryLock() {
+		return renderLocked()
+	}
+
+	if cached := p.renderedContentCache.Load(); cached != nil {
+		return *cached, nil
+	}
+
+	// nothing cached yet (first render of this page) — wait for the lock
+	p.mu.Lock()
+	return renderLocked()
+}
+
+// updateOutdatedWidgetsInBackground refreshes the page's due widgets off the
+// request path and publishes per-widget SSE events for anything that changed.
+// At most one update per page runs at a time.
+func (p *page) updateOutdatedWidgetsInBackground() {
+	if !p.updateInProgress.CompareAndSwap(false, true) {
+		return
+	}
+
+	go func() {
+		defer p.updateInProgress.Store(false)
+
+		p.mu.Lock()
+		defer p.mu.Unlock()
+
+		p.updateOutdatedWidgets()
+		p.publishChangedWidgets()
+	}()
 }
 
 func (a *application) handlePageContentRequest(w http.ResponseWriter, r *http.Request) {
@@ -412,30 +513,11 @@ func (a *application) handlePageContentRequest(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	pageData := templateData{
-		Page: page,
-	}
+	// serve the current in-memory content immediately (no spinner time);
+	// widget refreshes happen off the request path and reach clients via SSE
+	content, err := page.renderContent()
 
-	var err error
-	var responseBytes bytes.Buffer
-
-	func() {
-		page.mu.Lock()
-		defer page.mu.Unlock()
-
-		page.updateOutdatedWidgets()
-		err = pageContentTemplate.Execute(&responseBytes, pageData)
-
-		// detect content changes and publish event
-		newContent := responseBytes.Bytes()
-		if !bytes.Equal(newContent, page.lastRenderedContent) {
-			// copy content
-			page.lastRenderedContent = make([]byte, len(newContent))
-			copy(page.lastRenderedContent, newContent)
-			// publish an event that this page changed
-			publishEvent("page:update", map[string]string{"slug": page.Slug})
-		}
-	}()
+	page.updateOutdatedWidgetsInBackground()
 
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
@@ -443,7 +525,7 @@ func (a *application) handlePageContentRequest(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	w.Write(responseBytes.Bytes())
+	w.Write(content)
 }
 
 func (a *application) addressOfRequest(r *http.Request) string {

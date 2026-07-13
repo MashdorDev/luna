@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
@@ -87,9 +88,12 @@ type page struct {
 		Size    string  `yaml:"size"`
 		Widgets widgets `yaml:"widgets"`
 	} `yaml:"columns"`
-	PrimaryColumnIndex  int8       `yaml:"-"`
-	mu                  sync.Mutex `yaml:"-"`
-	lastRenderedContent []byte     `yaml:"-"`
+	PrimaryColumnIndex int8       `yaml:"-"`
+	mu                 sync.Mutex `yaml:"-"`
+	// last successful content render, readable without holding mu so page
+	// requests never block behind a long-running widget update
+	renderedContentCache atomic.Pointer[[]byte] `yaml:"-"`
+	updateInProgress     atomic.Bool            `yaml:"-"`
 }
 
 func newConfigFromYAML(contents []byte) (*config, error) {

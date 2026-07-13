@@ -2,6 +2,14 @@ import { setupPopovers } from './popover.js';
 import { setupMasonries } from './masonry.js';
 import { throttledDebounce, isElementVisible, openURLInNewTab } from './utils.js';
 import { elem, find, findAll } from './templating.js';
+import { Idiomorph } from './idiomorph.esm.js';
+
+// Morph new widget HTML onto the existing element — only changed nodes and
+// text are touched, so unchanged parts of the widget never flicker and
+// scroll/focus state survives updates.
+function morphWidget(widgetElem, html) {
+    Idiomorph.morph(widgetElem, html);
+}
 
 async function fetchPageContent(pageData) {
     // TODO: handle non 200 status codes/time outs
@@ -811,9 +819,16 @@ async function setupPage() {
 
     const pageElement = document.getElementById("page");
     const pageContentElement = document.getElementById("page-content");
-    let pageContent = await fetchPageContent(pageData);
 
-    pageContentElement.innerHTML = pageContent;
+    // content is server-rendered into the shell; only fetch when it's absent
+    // (e.g. a stale cached shell from before server-side rendering)
+    let pageContent;
+    if (pageContentElement.childElementCount > 0) {
+        pageContent = pageContentElement.innerHTML;
+    } else {
+        pageContent = await fetchPageContent(pageData);
+        pageContentElement.innerHTML = pageContent;
+    }
 
     try {
         setupPopovers();
@@ -851,7 +866,7 @@ async function setupPage() {
         }
 
         pageContent = newContent;
-        pageContentElement.innerHTML = newContent;
+        Idiomorph.morph(pageContentElement, newContent, { morphStyle: 'innerHTML' });
 
         try {
             setupPopovers();
@@ -931,7 +946,7 @@ async function setupPage() {
                                     const html = await resp.text();
                                     const widgetElem = document.querySelector(`[data-widget-id="${widgetId}"]`);
                                     if (widgetElem) {
-                                        widgetElem.outerHTML = html;
+                                        morphWidget(widgetElem, html);
 
                                         // re-run initializers globally
                                         // setup functions now have guards to prevent duplicate listeners
@@ -968,7 +983,7 @@ async function setupPage() {
                                     const html = await resp.text();
                                     const widgetElem = document.querySelector(`[data-widget-id="${widgetId}"]`);
                                     if (widgetElem && html !== widgetElem.outerHTML) {
-                                        widgetElem.outerHTML = html;
+                                        morphWidget(widgetElem, html);
 
                                         // re-run initializers globally
                                         // setup functions now have guards to prevent duplicate listeners
@@ -990,6 +1005,37 @@ async function setupPage() {
                             }
                         } catch (e) {
                             console.error('Failed to fetch widget content after custom-api event', e);
+                        }
+                    } else if (msg.type === 'widget:updated' && msg.data && msg.data.slug === pageData.slug) {
+                        // per-widget update — only refresh the changed widget
+                        try {
+                            const widgetId = msg.data.widget_id;
+                            if (widgetId) {
+                                const resp = await fetch(`${pageData.baseURL}/api/widgets/${widgetId}/content/`);
+                                if (resp.ok) {
+                                    const html = await resp.text();
+                                    const widgetElem = document.querySelector(`[data-widget-id="${widgetId}"]`);
+                                    if (widgetElem && html !== widgetElem.outerHTML) {
+                                        morphWidget(widgetElem, html);
+
+                                        setupPopovers();
+                                        setupClocks();
+                                        setupCarousels();
+                                        setupCollapsibleLists();
+                                        setupCollapsibleGrids();
+                                        setupGroups();
+                                        setupMasonries();
+                                        setupDynamicRelativeTime();
+                                        setupLazyImages();
+
+                                        for (let i = 0; i < contentReadyCallbacks.length; i++) {
+                                            contentReadyCallbacks[i]();
+                                        }
+                                    }
+                                }
+                            }
+                        } catch (e) {
+                            console.error('Failed to fetch widget content after widget:updated event', e);
                         }
                     }
                 } catch (e) {

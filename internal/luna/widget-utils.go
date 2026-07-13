@@ -21,7 +21,7 @@ var (
 	errPartialContent = errors.New("failed to retrieve some of the content")
 )
 
-const defaultClientTimeout = 5 * time.Second
+const defaultClientTimeout = 15 * time.Second
 
 var defaultHTTPClient = &http.Client{
 	Transport: &http.Transport{

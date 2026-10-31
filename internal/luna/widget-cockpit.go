@@ -401,8 +401,9 @@ func (widget *cockpitWidget) update(ctx context.Context) {
 	widget.Next = next
 	widget.Quotes = quotes
 	widget.Updated = now
+	widget.withError(nil)
 	widget.renderMu.Unlock()
-	widget.withError(nil).scheduleNextUpdate()
+	widget.scheduleNextUpdate()
 
 	// page.js refetches and morphs this widget in every open tab
 	publishEvent("custom-api:data_changed", map[string]any{"widget_id": widget.GetID(), "title": widget.Title})

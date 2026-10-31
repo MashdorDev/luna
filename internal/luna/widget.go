@@ -168,7 +168,7 @@ type widgetBase struct {
 	Notice              error            `yaml:"-"`
 	renderMu            sync.Mutex       `yaml:"-"`
 	templateBuffer      bytes.Buffer     `yaml:"-"`
-	cacheDuration      time.Duration    `yaml:"-"`
+	cacheDuration       time.Duration    `yaml:"-"`
 	cacheType           cacheType        `yaml:"-"`
 	nextUpdate          time.Time        `yaml:"-"`
 	updateRetriedTimes  int              `yaml:"-"`

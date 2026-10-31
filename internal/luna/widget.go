@@ -10,6 +10,7 @@ import (
 	"math"
 	"net/http"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -165,8 +166,9 @@ type widgetBase struct {
 	WIP                 bool             `yaml:"-"`
 	Error               error            `yaml:"-"`
 	Notice              error            `yaml:"-"`
+	renderMu            sync.Mutex       `yaml:"-"`
 	templateBuffer      bytes.Buffer     `yaml:"-"`
-	cacheDuration       time.Duration    `yaml:"-"`
+	cacheDuration      time.Duration    `yaml:"-"`
 	cacheType           cacheType        `yaml:"-"`
 	nextUpdate          time.Time        `yaml:"-"`
 	updateRetriedTimes  int              `yaml:"-"`
@@ -232,6 +234,11 @@ func (w *widgetBase) setProviders(providers *widgetProviders) {
 }
 
 func (w *widgetBase) renderTemplate(data any, t *template.Template) template.HTML {
+	// Requests render the same widget at once, and page.js fetches a widget on
+	// every SSE event, so without this they splice each other's HTML together
+	w.renderMu.Lock()
+	defer w.renderMu.Unlock()
+
 	w.templateBuffer.Reset()
 	err := t.Execute(&w.templateBuffer, data)
 	if err != nil {

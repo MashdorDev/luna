@@ -6,7 +6,7 @@
 <div class="ck-row {{ .Tone }}" data-g="{{ .Group }}">
     <button class="ck-line" aria-expanded="false">
         <span class="ck-big">{{ .Big }}</span>
-        <span class="ck-say"><b>{{ .Label }}</b><span>{{ .Sub }}</span></span>
+        <span class="ck-say"><b>{{ .Label }}</b><span>{{ .Sub }}</span>{{ if .Noted }}<span data-ck-note="{{ .Note }}" data-ck-noted="{{ .Noted }}"{{ if .Sub }} data-ck-after{{ end }}></span>{{ end }}</span>
         <span class="ck-end">
             <span class="ck-viz">
                 {{ if .Stack }}<span class="ck-stack">{{ range .Stack }}{{ if .Flex }}<i class="c-{{ .Color }}" style="flex:{{ .Flex }};opacity:{{ .Opacity }}"></i>{{ end }}{{ end }}</span>{{ end }}
@@ -20,7 +20,7 @@
         {{ range .Items }}
         <a class="ck-item" href="{{ .URL | safeURL }}" target="_blank" rel="noreferrer" data-search>
             <b dir="auto" title="{{ .Title }}">{{ .Title }}</b>
-            <span class="ck-tag {{ .Tone }}">{{ .Tag }}</span>
+            <span class="ck-tag {{ .Tone }}"{{ if .Due }} data-ck-due="{{ .Due }}" data-ck-prefix="{{ .Prefix }}"{{ end }}>{{ .Tag }}</span>
         </a>
         {{ end }}
     </div>
@@ -28,7 +28,7 @@
 {{ end }}
 
 {{ define "widget-content" }}
-<div class="cockpit">
+<div class="cockpit" data-ck-search="{{ .SearchURL }}">
     <div class="ck-main">
         <label class="ck-search">
             <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="7" cy="7" r="5"/><path d="m11 11 4 4"/></svg>
@@ -60,17 +60,15 @@
 
     <aside class="ck-side">
         <div class="ck-time" data-ck-clock></div>
-        <div class="ck-date"><span data-ck-date></span>{{ with .Sky }}, {{ .Temperature }}&deg; {{ .Condition }}{{ end }}</div>
-        {{ with .Sky }}{{ if .Sunrise }}
-        <div class="ck-daybar" aria-hidden="true"><u style="left:{{ .RiseAt }}%;width:calc({{ .SetAt }}% - {{ .RiseAt }}%)"></u><b data-ck-now="{{ .Timezone }}"></b></div>
-        <div class="ck-daylab"><span>sunrise {{ .Sunrise }}</span><span>sunset {{ .Sunset }}</span></div>
-        {{ end }}{{ end }}
+        <div class="ck-date"><span data-ck-date></span><span data-ck-sky></span></div>
+        <div class="ck-daybar" data-ck-daybar hidden aria-hidden="true"><u></u><b data-ck-now></b></div>
+        <div class="ck-daylab" data-ck-daylab hidden><span data-ck-rise></span><span data-ck-set></span></div>
         {{ if .Zones }}<div class="ck-zones">{{ range .Zones }}<span>{{ .Label }}<b data-ck-zone="{{ .Timezone }}"></b></span>{{ end }}</div>{{ end }}
 
         {{ if .Next }}
         <section class="ck-next">
             <div class="ck-cap">Next</div>
-            {{ range .Next }}<div class="ck-event"><div dir="auto">{{ .Name }}</div><div class="ck-sub">{{ .When }}{{ if .Calendar }}, {{ .Calendar }}{{ end }}</div></div>{{ end }}
+            {{ range .Next }}<div class="ck-event"><div dir="auto">{{ .Name }}</div><div class="ck-sub"><span {{ if .At }}data-ck-at="{{ .At }}"{{ else }}data-ck-day-only="{{ .Date }}"{{ end }}></span>{{ if .Calendar }}, {{ .Calendar }}{{ end }}</div></div>{{ end }}
         </section>
         {{ end }}
 
@@ -79,7 +77,7 @@
             {{ if .Hours.Error }}<div class="ck-fail">{{ .Hours.Error }}</div>{{ else }}
             <div class="ck-val">{{ printf "%.1f" .Hours.Week }}</div>
             <div class="ck-week">{{ range .Hours.Days }}<div class="{{ if not .Hours }}off{{ end }}"><i style="height:{{ .Height }}%"></i></div>{{ end }}</div>
-            <div class="ck-wk">{{ range .Hours.Days }}<span class="{{ if .Today }}now{{ end }}">{{ .Letter }}</span>{{ end }}</div>
+            <div class="ck-wk">{{ range .Hours.Days }}<span data-ck-day="{{ .Date }}"></span>{{ end }}</div>
             {{ end }}
         </section>
 

@@ -68,14 +68,15 @@
 .ck-after { margin-top: 16px; font-size: 13px; color: var(--color-text-subdue); text-align: right; }
 
 .ck-side { font-size: 14px; }
-.ck-time { font-size: 62px; line-height: 1; letter-spacing: -.045em; font-weight: 500; font-variant-numeric: tabular-nums; }
+.ck-time { font-size: 52px; white-space: nowrap; line-height: 1; letter-spacing: -.045em; font-weight: 500; font-variant-numeric: tabular-nums; }
 .ck-date { color: var(--color-text-base); margin-top: 8px; }
 .ck-daybar { position: relative; height: 6px; margin-top: 12px; border-radius: 3px; background: var(--color-widget-background); overflow: hidden; }
 .ck-daybar u { position: absolute; top: 0; bottom: 0; background: var(--color-widget-background-highlight); }
 .ck-daybar b { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--color-text-highlight); }
 .ck-daylab { display: flex; justify-content: space-between; font-size: 10.5px; color: var(--color-text-subdue); margin-top: 3px; }
-.ck-zones { display: flex; justify-content: space-between; margin-top: 12px; font-size: 13px; color: var(--color-text-subdue); }
-.ck-zones b { display: block; font-weight: 400; color: var(--color-text-base); font-variant-numeric: tabular-nums; }
+.ck-zones { margin-top: 12px; font-size: 13px; color: var(--color-text-subdue); }
+.ck-zones > span { display: flex; justify-content: space-between; padding: 1.5px 0; }
+.ck-zones b { font-weight: 400; color: var(--color-text-base); font-variant-numeric: tabular-nums; }
 .ck-side section { border-top: 1px solid var(--color-separator); padding-top: 14px; margin-top: 18px; }
 .ck-cap { font-size: 13px; color: var(--color-text-subdue); margin-bottom: 6px; }
 .ck-sub { color: var(--color-text-base); font-size: 13px; }
@@ -119,3 +120,5 @@
 
 .ck-go b { font-weight: 500; }
 .ck-event + .ck-event { margin-top: 8px; }
+
+.ck-daylab[hidden], .ck-daybar[hidden], .ck-zones [hidden] { display: none; }

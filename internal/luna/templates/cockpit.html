@@ -1,0 +1,100 @@
+{{ template "widget-base.html" . }}
+
+{{ define "widget-content-classes" }}widget-content-frameless{{ end }}
+
+{{ define "cockpit-row" }}
+<div class="ck-row {{ .Tone }}" data-g="{{ .Group }}">
+    <button class="ck-line" aria-expanded="false">
+        <span class="ck-big">{{ .Big }}</span>
+        <span class="ck-say"><b>{{ .Label }}</b><span>{{ .Sub }}</span></span>
+        <span class="ck-end">
+            <span class="ck-viz">
+                {{ if .Stack }}<span class="ck-stack">{{ range .Stack }}{{ if .Flex }}<i class="c-{{ .Color }}" style="flex:{{ .Flex }};opacity:{{ .Opacity }}"></i>{{ end }}{{ end }}</span>{{ end }}
+                {{ if .Pips }}<span class="ck-pips">{{ range .Pips }}<i class="{{ . }}"></i>{{ end }}</span>{{ end }}
+                {{ if .Spark }}<span class="ck-spark">{{ range .Spark }}<i style="height:{{ . }}%"></i>{{ end }}</span>{{ end }}
+            </span>
+            <span class="ck-hint">{{ .Hint }}</span>
+        </span>
+    </button>
+    <div class="ck-drawer">
+        {{ range .Items }}
+        <a class="ck-item" href="{{ .URL | safeURL }}" target="_blank" rel="noreferrer" data-search>
+            <b dir="auto" title="{{ .Title }}">{{ .Title }}</b>
+            <span class="ck-tag {{ .Tone }}">{{ .Tag }}</span>
+        </a>
+        {{ end }}
+    </div>
+</div>
+{{ end }}
+
+{{ define "widget-content" }}
+<div class="cockpit">
+    <div class="ck-main">
+        <label class="ck-search">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="7" cy="7" r="5"/><path d="m11 11 4 4"/></svg>
+            <input id="ck-q" placeholder="Search the web, or jump to anything" aria-label="Search" autocomplete="off">
+            <kbd>/</kbd>
+        </label>
+        <div class="ck-apps">
+            {{ range .Apps }}
+            <a class="ck-app" href="{{ .URL | safeURL }}" target="_blank" rel="noreferrer" data-search>
+                <img alt="" loading="lazy" src="{{ .Icon.URL }}">{{ if .Down }}<i title="Down"></i>{{ end }}<b>{{ .Title }}</b>
+            </a>
+            {{ end }}
+        </div>
+        <div class="ck-results" id="ck-results" hidden></div>
+
+        <div id="ck-board">
+            <h2 class="ck-h">Needs you</h2>
+            {{ range .Failures }}<p class="ck-fail">Could not read {{ . }}</p>{{ end }}
+            {{ range .Now }}{{ template "cockpit-row" . }}{{ else }}{{ if not .Failures }}<div class="ck-clear">Nothing right now</div>{{ end }}{{ end }}
+
+            {{ if .Later }}
+            <h2 class="ck-h">Can wait</h2>
+            <div class="ck-quiet">{{ range .Later }}{{ template "cockpit-row" . }}{{ end }}</div>
+            {{ end }}
+
+        </div>
+        <div class="ck-after">Updated <span {{ dynamicRelativeTimeAttrs .Updated }}></span> ago</div>
+    </div>
+
+    <aside class="ck-side">
+        <div class="ck-time" data-ck-clock></div>
+        <div class="ck-date"><span data-ck-date></span>{{ with .Sky }}, {{ .Temperature }}&deg; {{ .Condition }}{{ end }}</div>
+        {{ with .Sky }}{{ if .Sunrise }}
+        <div class="ck-daybar" aria-hidden="true"><u style="left:{{ .RiseAt }}%;width:calc({{ .SetAt }}% - {{ .RiseAt }}%)"></u><b data-ck-now="{{ .Timezone }}"></b></div>
+        <div class="ck-daylab"><span>sunrise {{ .Sunrise }}</span><span>sunset {{ .Sunset }}</span></div>
+        {{ end }}{{ end }}
+        {{ if .Zones }}<div class="ck-zones">{{ range .Zones }}<span>{{ .Label }}<b data-ck-zone="{{ .Timezone }}"></b></span>{{ end }}</div>{{ end }}
+
+        {{ if .Next }}
+        <section class="ck-next">
+            <div class="ck-cap">Next</div>
+            {{ range .Next }}<div class="ck-event"><div dir="auto">{{ .Name }}</div><div class="ck-sub">{{ .When }}{{ if .Calendar }}, {{ .Calendar }}{{ end }}</div></div>{{ end }}
+        </section>
+        {{ end }}
+
+        <section class="ck-hours">
+            <div class="ck-cap">Hours this week</div>
+            {{ if .Hours.Error }}<div class="ck-fail">{{ .Hours.Error }}</div>{{ else }}
+            <div class="ck-val">{{ printf "%.1f" .Hours.Week }}</div>
+            <div class="ck-week">{{ range .Hours.Days }}<div class="{{ if not .Hours }}off{{ end }}"><i style="height:{{ .Height }}%"></i></div>{{ end }}</div>
+            <div class="ck-wk">{{ range .Hours.Days }}<span class="{{ if .Today }}now{{ end }}">{{ .Letter }}</span>{{ end }}</div>
+            {{ end }}
+        </section>
+
+        {{ if .Quotes }}
+        <section class="ck-markets">
+            <div class="ck-cap">Markets</div>
+            {{ range .Quotes }}
+            <div class="ck-kv"><span>{{ .Symbol }}</span><span class="{{ if ge .PercentChange 0.0 }}up{{ else }}down{{ end }}">{{ printf "%+.2f" .PercentChange }}%</span></div>
+            {{ end }}
+        </section>
+        {{ end }}
+
+        <section class="ck-sites">
+            <div class="ck-sitesline {{ if .SitesDown }}down{{ end }}"><span class="ck-dot"></span>{{ if .SitesDown }}{{ len .SitesDown }} of {{ .SiteCount }} sites down{{ else }}All {{ .SiteCount }} sites up{{ end }}</div>
+        </section>
+    </aside>
+</div>
+{{ end }}

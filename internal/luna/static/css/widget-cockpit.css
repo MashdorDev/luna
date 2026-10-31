@@ -1,0 +1,121 @@
+.cockpit {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 248px;
+    gap: 64px;
+    font-size: 15px;
+    line-height: 1.4;
+    color: var(--color-text-highlight);
+}
+.cockpit button, .cockpit input { font: inherit; color: inherit; }
+
+.ck-search { display: flex; align-items: center; gap: 12px; height: 54px; padding: 0 18px; background: var(--color-widget-background); border: 1px solid transparent; border-radius: 12px; }
+.ck-search:focus-within { border-color: var(--color-text-subdue); }
+.ck-search svg { width: 17px; height: 17px; color: var(--color-text-subdue); flex: none; }
+.ck-search input { flex: 1; min-width: 0; background: none; border: 0; outline: 0; font-size: 18px; }
+.ck-search input::placeholder { color: var(--color-text-subdue); }
+.ck-search kbd { font-size: 11px; color: var(--color-text-subdue); border: 1px solid var(--color-separator); border-radius: 4px; padding: 1px 6px; }
+
+.ck-apps { display: grid; grid-template-columns: repeat(8, 1fr); gap: 4px; margin: 14px -6px 0; }
+.ck-app { position: relative; display: flex; flex-direction: column; align-items: center; gap: 7px; padding: 10px 2px 8px; border-radius: 10px; font-size: 12.5px; color: var(--color-text-base); text-align: center; }
+.ck-app b { font-weight: 400; }
+.ck-app:hover, .ck-app.cur, .ck-app.hit { background: var(--color-widget-background); color: var(--color-text-highlight); }
+.ck-app img { width: 30px; height: 30px; border-radius: 7px; background: #fff; padding: 3px; }
+.ck-app i { position: absolute; top: 7px; right: calc(50% - 21px); width: 11px; height: 11px; border-radius: 50%; background: var(--color-negative); border: 2px solid var(--color-background); }
+
+.ck-h { font-size: 13px; font-weight: 500; color: var(--color-text-subdue); margin: 30px 0 4px; }
+.ck-row { border-top: 1px solid var(--color-separator); }
+.ck-line { display: grid; grid-template-columns: 112px minmax(0, 1fr) 132px; gap: 16px; align-items: center; width: calc(100% + 16px); margin: 0 -8px; padding: 13px 8px; background: none; border: 0; border-radius: 8px; text-align: left; cursor: pointer; }
+.ck-line:hover, .ck-line.cur { background: var(--color-widget-background); }
+.ck-line.cur { box-shadow: inset 2px 0 0 var(--color-text-highlight); }
+.ck-big { font-size: 34px; line-height: 1; font-weight: 500; letter-spacing: -.03em; font-variant-numeric: tabular-nums; }
+.ck-say b { display: block; font-size: 16px; font-weight: 500; }
+.ck-say span { color: var(--color-text-base); font-size: 13.5px; }
+.ck-row.hot .ck-big { color: var(--color-negative); }
+.ck-row.warn .ck-big { color: var(--ck-warn); }
+.ck-quiet .ck-line { padding: 9px 8px; }
+.ck-quiet .ck-big { font-size: 22px; letter-spacing: -.02em; }
+.ck-quiet .ck-say b { font-size: 15px; }
+
+.ck-hint { display: none; font-size: 12.5px; text-align: right; }
+.ck-line:hover .ck-hint, .ck-line.cur .ck-hint { display: block; }
+.ck-line:hover .ck-viz, .ck-line.cur .ck-viz { display: none; }
+.ck-stack { display: flex; gap: 2px; height: 8px; }
+.ck-stack i { border-radius: 2px; min-width: 3px; }
+.c-negative { background: var(--color-negative); }
+.c-positive { background: var(--color-positive); }
+.c-primary { background: var(--color-primary); }
+.c-faint { background: var(--color-widget-background-highlight); }
+.ck-pips { display: flex; flex-wrap: wrap; gap: 3px; justify-content: flex-end; }
+.ck-pips i { width: 9px; height: 9px; border-radius: 2px; background: var(--color-widget-background-highlight); }
+.ck-pips i.hot { background: var(--color-negative); }
+.ck-pips i.warn { background: var(--ck-warn); }
+.ck-spark { display: flex; align-items: flex-end; gap: 3px; height: 24px; justify-content: flex-end; }
+.ck-spark i { width: 12px; background: var(--color-primary); border-radius: 2px 2px 0 0; opacity: .75; min-height: 2px; }
+
+.ck-drawer { display: none; padding: 0 0 10px 128px; }
+.ck-row.open .ck-drawer { display: block; }
+.ck-item { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 6px 8px; margin: 0 -8px; border-radius: 7px; }
+.ck-item:hover, .ck-item.cur { background: var(--color-widget-background); }
+.ck-item b { font-weight: 400; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ck-tag { font-size: 12.5px; color: var(--color-text-base); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.ck-tag.hot { color: var(--color-negative); }
+.ck-tag.warn { color: var(--ck-warn); }
+.ck-results { margin-top: 12px; }
+.ck-results .ck-empty { padding: 6px 8px; color: var(--color-text-base); }
+
+.ck-clear { padding: 18px 0; border-top: 1px solid var(--color-separator); font-size: 18px; color: var(--color-positive); }
+.ck-fail { margin: 12px 0 0; font-size: 13px; color: var(--color-negative); }
+.ck-after { margin-top: 16px; font-size: 13px; color: var(--color-text-subdue); text-align: right; }
+
+.ck-side { font-size: 14px; }
+.ck-time { font-size: 62px; line-height: 1; letter-spacing: -.045em; font-weight: 500; font-variant-numeric: tabular-nums; }
+.ck-date { color: var(--color-text-base); margin-top: 8px; }
+.ck-daybar { position: relative; height: 6px; margin-top: 12px; border-radius: 3px; background: var(--color-widget-background); overflow: hidden; }
+.ck-daybar u { position: absolute; top: 0; bottom: 0; background: var(--color-widget-background-highlight); }
+.ck-daybar b { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--color-text-highlight); }
+.ck-daylab { display: flex; justify-content: space-between; font-size: 10.5px; color: var(--color-text-subdue); margin-top: 3px; }
+.ck-zones { display: flex; justify-content: space-between; margin-top: 12px; font-size: 13px; color: var(--color-text-subdue); }
+.ck-zones b { display: block; font-weight: 400; color: var(--color-text-base); font-variant-numeric: tabular-nums; }
+.ck-side section { border-top: 1px solid var(--color-separator); padding-top: 14px; margin-top: 18px; }
+.ck-cap { font-size: 13px; color: var(--color-text-subdue); margin-bottom: 6px; }
+.ck-sub { color: var(--color-text-base); font-size: 13px; }
+.ck-val { font-size: 26px; font-weight: 500; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
+.ck-week { display: grid; grid-template-columns: repeat(7, 1fr); gap: 5px; align-items: end; height: 42px; margin-top: 8px; }
+.ck-week div { display: flex; align-items: flex-end; height: 100%; }
+.ck-week i { display: block; width: 100%; border-radius: 2px; background: var(--color-primary); min-height: 2px; }
+.ck-week .off i { background: var(--color-widget-background-highlight); }
+.ck-wk { display: grid; grid-template-columns: repeat(7, 1fr); gap: 5px; margin-top: 3px; font-size: 10.5px; color: var(--color-text-subdue); text-align: center; }
+.ck-wk .now { color: var(--color-text-highlight); }
+.ck-kv { display: flex; justify-content: space-between; padding: 1.5px 0; font-size: 13.5px; }
+.ck-kv span:first-child { color: var(--color-text-base); }
+.ck-kv span:last-child { font-variant-numeric: tabular-nums; }
+.ck-kv .up { color: var(--color-positive); }
+.ck-kv .down { color: var(--color-negative); }
+.ck-sitesline { display: flex; align-items: center; gap: 8px; }
+.ck-sitesline.down { color: var(--color-negative); }
+.ck-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--color-positive); }
+.ck-sitesline.down .ck-dot { background: var(--color-negative); }
+
+:root { --ck-warn: hsl(39, 78%, 58%); }
+:root[data-scheme="light"] { --ck-warn: hsl(39, 90%, 34%); }
+
+@media (max-width: 860px) {
+    .cockpit { grid-template-columns: 1fr; gap: 20px; }
+    .ck-side { order: -1; display: flex; align-items: baseline; justify-content: space-between; gap: 6px 12px; flex-wrap: wrap; }
+    .ck-side section, .ck-zones, .ck-daybar, .ck-daylab { display: none; }
+    .ck-side .ck-sites { display: block; flex-basis: 100%; border: 0; margin: 0; padding: 0; color: var(--color-text-base); font-size: 13px; }
+    .ck-time { font-size: 38px; }
+    .ck-date { margin: 0; font-size: 13px; }
+    .ck-search { height: 48px; }
+    .ck-search kbd { display: none; }
+    .ck-apps { grid-template-columns: repeat(4, 1fr); }
+    .ck-line { grid-template-columns: 84px minmax(0, 1fr); }
+    .ck-end { display: none; }
+    .ck-big { font-size: 28px; }
+    .ck-drawer { padding-left: 0; }
+    .ck-item { grid-template-columns: minmax(0, 1fr) auto; }
+    .ck-item b { white-space: normal; }
+}
+
+.ck-go b { font-weight: 500; }
+.ck-event + .ck-event { margin-top: 8px; }

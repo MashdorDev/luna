@@ -237,6 +237,10 @@ func fetchWeatherForOpenMeteoPlace(place *openMeteoPlaceResponseJson, units stri
 		return nil, fmt.Errorf("%w: %v", errNoContent, err)
 	}
 
+	if len(responseJson.Daily.Sunrise) == 0 || len(responseJson.Daily.Sunset) == 0 {
+		return nil, errors.New("weather response has no sunrise or sunset")
+	}
+
 	now := time.Now().In(place.location)
 	bars := make([]weatherColumn, 0, 24)
 	currentBar := now.Hour() / 2

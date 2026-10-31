@@ -87,8 +87,10 @@ func (widget *customAPIWidget) update(ctx context.Context) {
 	// Detect content change for live-events
 	if widget.CompiledHTML != compiledHTML {
 		previousHTML := widget.CompiledHTML
+		widget.renderMu.Lock()
 		widget.PrevCompiledHTML = widget.CompiledHTML
 		widget.CompiledHTML = compiledHTML
+		widget.renderMu.Unlock()
 
 		// Emit live-event for data change
 		publishEvent("custom-api:data_changed", map[string]interface{}{

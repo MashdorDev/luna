@@ -58,6 +58,9 @@ func (widget *monitorWidget) update(ctx context.Context) {
 
 	statuses, err := fetchStatusForSites(requests)
 
+	widget.renderMu.Lock()
+	defer widget.renderMu.Unlock()
+
 	if !widget.canContinueUpdateAfterHandlingErr(err) {
 		return
 	}

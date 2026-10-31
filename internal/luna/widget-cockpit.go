@@ -369,10 +369,6 @@ func (widget *cockpitWidget) update(ctx context.Context) {
 		})
 	}
 
-	for i := range widget.Apps {
-		widget.Apps[i].Down = slices.Contains(down, widget.Apps[i].Title) || slices.Contains(down, widget.Apps[i].Site)
-	}
-
 	order := map[string]int{"down": 0, "money": 1, "fail": 2, "review": 3, "err": 4, "iss": 5, "owed": 6, "draft": 7}
 	// Sources finish in any order, so break ties on Group to keep rows from swapping between updates
 	slices.SortStableFunc(rows, func(a, b cockpitRow) int {
@@ -392,6 +388,10 @@ func (widget *cockpitWidget) update(ctx context.Context) {
 	}
 
 	slices.Sort(failures)
+	widget.renderMu.Lock()
+	for i := range widget.Apps {
+		widget.Apps[i].Down = slices.Contains(down, widget.Apps[i].Title) || slices.Contains(down, widget.Apps[i].Site)
+	}
 	widget.Now = needs
 	widget.Later = later
 	widget.Failures = failures
@@ -401,7 +401,9 @@ func (widget *cockpitWidget) update(ctx context.Context) {
 	widget.Next = next
 	widget.Quotes = quotes
 	widget.Updated = now
-	widget.withError(nil).scheduleNextUpdate()
+	widget.withError(nil)
+	widget.renderMu.Unlock()
+	widget.scheduleNextUpdate()
 
 	// page.js refetches and morphs this widget in every open tab
 	publishEvent("custom-api:data_changed", map[string]any{"widget_id": widget.GetID(), "title": widget.Title})

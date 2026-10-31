@@ -23,10 +23,11 @@ import (
 var cockpitWidgetTemplate = mustParseTemplate("cockpit.html", "widget-base.html")
 
 const (
-	cockpitQuotesEvery  = 15 * time.Minute
-	cockpitSkyEvery     = 30 * time.Minute
-	cockpitDrawerErrors = 10
-	cockpitNextEvents   = 3
+	cockpitQuotesEvery    = 15 * time.Minute
+	cockpitSkyEvery       = 30 * time.Minute
+	cockpitCalendarsEvery = 30 * time.Minute
+	cockpitDrawerErrors   = 10
+	cockpitNextEvents     = 4
 )
 
 // update holds the page lock while it fetches, so a hung source can't be allowed the default 15 seconds
@@ -106,19 +107,21 @@ type cockpitWidget struct {
 		APIKey        string `yaml:"api-key"`
 	} `yaml:"markets"`
 
-	Now       []cockpitRow   `yaml:"-"`
-	Later     []cockpitRow   `yaml:"-"`
-	Failures  []string       `yaml:"-"`
-	SiteCount int            `yaml:"-"`
-	SitesDown []string       `yaml:"-"`
-	Hours     cockpitHours   `yaml:"-"`
-	Next      []cockpitEvent `yaml:"-"`
-	Sky       *cockpitSky    `yaml:"-"`
-	Quotes    marketList     `yaml:"-"`
-	Updated   time.Time      `yaml:"-"`
-	place     *openMeteoPlaceResponseJson
-	quotesAt  time.Time
-	skyAt     time.Time
+	Now         []cockpitRow   `yaml:"-"`
+	Later       []cockpitRow   `yaml:"-"`
+	Failures    []string       `yaml:"-"`
+	SiteCount   int            `yaml:"-"`
+	SitesDown   []string       `yaml:"-"`
+	Hours       cockpitHours   `yaml:"-"`
+	Next        []cockpitEvent `yaml:"-"`
+	Sky         *cockpitSky    `yaml:"-"`
+	Quotes      marketList     `yaml:"-"`
+	Updated     time.Time      `yaml:"-"`
+	place       *openMeteoPlaceResponseJson
+	quotesAt    map[string]time.Time
+	skyAt       time.Time
+	calendarsAt time.Time
+	calendarErr error
 }
 
 type cockpitItem struct {
@@ -285,12 +288,27 @@ func (widget *cockpitWidget) update(ctx context.Context) {
 	}()
 	go func() {
 		defer wg.Done()
-		fresh, err := widget.fetchNextEvents(now)
-		if err != nil {
-			slog.Error("Cockpit calendar failed", "error", cockpitErrorText(err))
-			return
+		upcoming := func(events []cockpitEvent) []cockpitEvent {
+			return slices.DeleteFunc(slices.Clone(events), func(event cockpitEvent) bool {
+				return event.start.Before(now.Add(-time.Hour))
+			})
 		}
-		next = fresh
+		// glance-ical refetches the whole feed each call: polling it every few minutes
+		// once pulled 9 GB a day from Google, so calendars keep a slower clock
+		if now.Sub(widget.calendarsAt) >= cockpitCalendarsEvery {
+			widget.calendarsAt = now
+			fresh, err := widget.fetchNextEvents(now)
+			widget.calendarErr = err
+			if fresh != nil || err == nil {
+				next = fresh
+			}
+		}
+		next = upcoming(next)
+		if widget.calendarErr != nil {
+			mu.Lock()
+			failures = append(failures, widget.calendarErr.Error())
+			mu.Unlock()
+		}
 	}()
 	go func() {
 		defer wg.Done()
@@ -307,15 +325,7 @@ func (widget *cockpitWidget) update(ctx context.Context) {
 	}()
 	go func() {
 		defer wg.Done()
-		// Twelve Data allows 800 calls a day, shared with the Markets page
-		if now.Sub(widget.quotesAt) < cockpitQuotesEvery {
-			quotes = widget.Quotes
-			return
-		}
-		var complete bool
-		if quotes, complete = widget.fetchQuotes(); complete {
-			widget.quotesAt = now
-		}
+		quotes = widget.fetchQuotes(now)
 	}()
 
 	requests := make([]*SiteStatusRequest, len(widget.Sites))
@@ -761,8 +771,12 @@ func (widget *cockpitWidget) fetchInvoices(index int, now time.Time) ([]cockpitR
 		if truncated {
 			sub += ", over 100 unpaid, total too low"
 		}
+		big, what := intl.Sprintf("%.0f", owedTotal), company.Currency+" not due yet"
+		if owedOther == len(owedItems) {
+			big, what = strconv.Itoa(owedOther), pluralWord(owedOther, "invoice", "invoices")+" not due yet"
+		}
 		rows = append(rows, cockpitRow{
-			Kind: "owed", Group: fmt.Sprintf("owed-%d", index), Big: intl.Sprintf("%.0f", owedTotal), Label: company.Currency + " not due yet",
+			Kind: "owed", Group: fmt.Sprintf("owed-%d", index), Big: big, Label: what,
 			Sub: sub, Hint: "See invoices", Items: owedItems,
 		})
 	}
@@ -771,8 +785,12 @@ func (widget *cockpitWidget) fetchInvoices(index int, now time.Time) ([]cockpitR
 		if draftOther > 0 {
 			sub += otherNote
 		}
+		big, what := intl.Sprintf("%.0f", draftTotal), company.Currency+" in draft"
+		if draftOther == len(draftItems) {
+			big, what = strconv.Itoa(draftOther), pluralWord(draftOther, "draft", "drafts")+" in other currencies"
+		}
 		rows = append(rows, cockpitRow{
-			Kind: "draft", Group: fmt.Sprintf("draft-%d", index), Big: intl.Sprintf("%.0f", draftTotal), Label: company.Currency + " in draft",
+			Kind: "draft", Group: fmt.Sprintf("draft-%d", index), Big: big, Label: what,
 			Sub: sub, Hint: "See drafts", Items: draftItems,
 		})
 	}
@@ -849,7 +867,7 @@ func (widget *cockpitWidget) fetchNextEvents(now time.Time) ([]cockpitEvent, err
 			mu.Lock()
 			defer mu.Unlock()
 			if err != nil {
-				lastErr = fmt.Errorf("%s: %s", calendar.Name, cockpitErrorText(err))
+				lastErr = fmt.Errorf("Calendar %s: %s", calendar.Name, cockpitErrorText(err))
 				slog.Error("Cockpit calendar failed", "calendar", calendar.Name, "error", cockpitErrorText(err))
 				return
 			}
@@ -871,8 +889,17 @@ func (widget *cockpitWidget) fetchNextEvents(now time.Time) ([]cockpitEvent, err
 	if answered == 0 && lastErr != nil {
 		return nil, lastErr
 	}
-	slices.SortStableFunc(events, func(a, b cockpitEvent) int { return a.start.Compare(b.start) })
-	return events[:min(len(events), cockpitNextEvents)], nil
+	// Accounts invited to the same meeting each report it, and feeds finish in any order
+	slices.SortStableFunc(events, func(a, b cockpitEvent) int {
+		if order := a.start.Compare(b.start); order != 0 {
+			return order
+		}
+		return strings.Compare(a.Name+a.Calendar, b.Name+b.Calendar)
+	})
+	events = slices.CompactFunc(events, func(a, b cockpitEvent) bool {
+		return a.start.Equal(b.start) && strings.EqualFold(a.Name, b.Name)
+	})
+	return events[:min(len(events), cockpitNextEvents)], lastErr
 }
 
 func (widget *cockpitWidget) fetchSky() (*cockpitSky, error) {
@@ -914,29 +941,40 @@ func (widget *cockpitWidget) fetchSky() (*cockpitSky, error) {
 	return sky, nil
 }
 
-func (widget *cockpitWidget) fetchQuotes() (marketList, bool) {
+// Twelve Data allows 800 calls a day shared with the Markets page, so each symbol
+// keeps its own clock and one failing provider can't make the others refetch.
+func (widget *cockpitWidget) fetchQuotes(now time.Time) marketList {
 	var quotes marketList
-	complete := true
+	if widget.quotesAt == nil {
+		widget.quotesAt = map[string]time.Time{}
+	}
+	previous := func(symbol string) {
+		for _, quote := range widget.Quotes {
+			if quote.Symbol == symbol {
+				quotes = append(quotes, quote)
+			}
+		}
+	}
 	for _, entry := range widget.Markets {
+		if now.Sub(widget.quotesAt[entry.Symbol]) < cockpitQuotesEvery {
+			previous(entry.Symbol)
+			continue
+		}
+		widget.quotesAt[entry.Symbol] = now
 		provider, err := getMarketProvider(entry.Provider)
 		if err != nil {
 			slog.Error("Cockpit market provider", "error", err)
-			complete = false
+			previous(entry.Symbol)
 			continue
 		}
 		result, err := provider.FetchMarkets([]marketRequest{entry.marketRequest}, entry.APIKey)
 		if err != nil {
 			slog.Error("Cockpit market failed", "symbol", entry.Symbol, "error", cockpitErrorText(err))
-			complete = false
 			// Keep the last price rather than dropping the line
-			for _, previous := range widget.Quotes {
-				if previous.Symbol == entry.Symbol {
-					quotes = append(quotes, previous)
-				}
-			}
+			previous(entry.Symbol)
 			continue
 		}
 		quotes = append(quotes, result...)
 	}
-	return quotes, complete
+	return quotes
 }

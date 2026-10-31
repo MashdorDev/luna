@@ -3,12 +3,18 @@ let openGroup = null;
 let cursor = -1;
 let query = '';
 let typed = '';
+let rawTyped = '';
+let caret = 0;
+
+// Not web addresses even though they look like one: next.js, README.md, package.json
+const FILE_ENDINGS = /\.(js|ts|jsx|tsx|md|json|py|go|rs|rb|txt|html|css|yml|yaml|sh|java|php|sql|csv|pdf|png|jpg|gif|svg|zip)$/i;
 
 // google.com, docs.dorzairi.com/x, https://a.b, localhost:3000 and 10.0.0.200:8000 go straight to the site.
 // Local addresses stay on http because they rarely have certificates.
 function addressFrom(text) {
     if (/^https?:\/\/\S+$/i.test(text)) return text;
     if (/^(localhost|\d{1,3}(\.\d{1,3}){3})(:\d+)?(\/\S*)?$/i.test(text)) return 'http://' + text;
+    if (FILE_ENDINGS.test(text)) return null;
     if (/^([a-z0-9-]+\.)+[a-z]{2,}(:\d+)?([/?#]\S*)?$/i.test(text)) return 'https://' + text;
     return null;
 }
@@ -108,7 +114,9 @@ document.addEventListener('click', (event) => {
 
 document.addEventListener('input', (event) => {
     if (event.target.id !== 'ck-q') return;
-    typed = event.target.value.trim();
+    rawTyped = event.target.value;
+    caret = event.target.selectionStart;
+    typed = rawTyped.trim();
     query = typed.toLowerCase();
     cursor = -1;
     runSearch();
@@ -117,6 +125,7 @@ document.addEventListener('input', (event) => {
 document.addEventListener('keydown', (event) => {
     if (!root() || event.metaKey || event.ctrlKey || event.altKey) return;
     const inSearch = event.target.id === 'ck-q';
+    if (inSearch) queueMicrotask(() => { caret = event.target.selectionStart; });
 
     if (inSearch) {
         if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
@@ -134,6 +143,7 @@ document.addEventListener('keydown', (event) => {
         } else if (event.key === 'Escape') {
             event.target.value = '';
             typed = '';
+            rawTyped = '';
             query = '';
             event.target.blur();
             runSearch();
@@ -161,7 +171,10 @@ new MutationObserver(() => {
     if (!root()) return;
     // A widget update can rebuild the box, which would lose what was being typed
     const box = document.getElementById('ck-q');
-    if (box && box.value !== typed && typed) box.value = typed;
+    if (box && rawTyped && !box.value) {
+        box.value = rawTyped;
+        box.setSelectionRange(caret, caret);
+    }
     restoreOpen();
     tickClock();
     if (query) {

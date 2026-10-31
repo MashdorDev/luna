@@ -138,7 +138,10 @@ function tickClock() {
     document.querySelectorAll('[data-ck-noted]').forEach((n) => {
         const days = daysFromToday(n.dataset.ckNoted);
         const plural = Math.abs(days) === 1 ? 'day' : 'days';
-        const text = n.dataset.ckNote === 'oldest' ? `Oldest is ${-days} ${plural} overdue` : `next due in ${days} ${plural}`;
+        // The row is sorted by the server's day, so near midnight in another zone days can be off by one
+        const text = n.dataset.ckNote === 'oldest'
+            ? (days < 0 ? `Oldest is ${-days} ${plural} overdue` : 'Due today')
+            : (days > 0 ? `next due in ${days} ${plural}` : days === 0 ? 'next due today' : `next was due ${-days} ${plural} ago`);
         setText(n, 'ckAfter' in n.dataset ? `, ${text.charAt(0).toLowerCase()}${text.slice(1)}` : text.charAt(0).toUpperCase() + text.slice(1));
     });
     paintSky();
@@ -147,6 +150,7 @@ function tickClock() {
 const WEATHER_WORDS = { 0: 'clear sky', 1: 'mainly clear', 2: 'partly cloudy', 3: 'overcast', 45: 'fog', 48: 'rime fog', 51: 'light drizzle', 53: 'drizzle', 55: 'heavy drizzle', 56: 'freezing drizzle', 57: 'freezing drizzle', 61: 'light rain', 63: 'rain', 65: 'heavy rain', 66: 'freezing rain', 67: 'freezing rain', 71: 'light snow', 73: 'snow', 75: 'heavy snow', 77: 'snow grains', 80: 'light showers', 81: 'showers', 82: 'heavy showers', 85: 'snow showers', 86: 'heavy snow showers', 95: 'thunderstorm', 96: 'thunderstorm with hail', 99: 'thunderstorm with hail' };
 const SKY_EVERY = 30 * 60 * 1000;
 let sky = null;
+let skyAsked = false;
 
 function paintSky() {
     if (!sky) return;
@@ -157,7 +161,7 @@ function paintSky() {
         bar.hidden = false;
         const light = bar.querySelector('u');
         light.style.left = (hourParts(rise) / 14.4) + '%';
-        light.style.width = ((hourParts(set) - hourParts(rise)) / 14.4) + '%';
+        light.style.width = (Math.max(0, hourParts(set) - hourParts(rise)) / 14.4) + '%';
     });
     document.querySelectorAll('[data-ck-daylab]').forEach((n) => { n.hidden = false; });
     document.querySelectorAll('[data-ck-rise]').forEach((n) => setText(n, `sunrise ${clockText(rise)}`));
@@ -166,7 +170,9 @@ function paintSky() {
 
 // The city comes from the device's time zone, so there is no location prompt and nothing to configure
 async function loadSky() {
+    // The widget can still be loading right after a Luna restart, the observer calls this again
     if (!root()) return;
+    skyAsked = true;
     const zone = viewerZone();
     const key = `ck-sky-${zone}`;
     try {
@@ -180,7 +186,8 @@ async function loadSky() {
     try {
         const city = zone.split('/').pop().replaceAll('_', ' ');
         const places = await (await fetch(`https://geocoding-api.open-meteo.com/v1/search?count=10&name=${encodeURIComponent(city)}`)).json();
-        const place = (places.results || []).find((p) => p.timezone === zone) || (places.results || [])[0];
+        // Only a place in this exact zone: a similar name could be anywhere, like "Eastern" or "UTC"
+        const place = (places.results || []).find((p) => p.timezone === zone);
         if (!place) return;
         const fahrenheit = new Intl.Locale(navigator.language).region === 'US';
         const query = `latitude=${place.latitude}&longitude=${place.longitude}&timezone=${encodeURIComponent(zone)}&timeformat=unixtime&forecast_days=1&current=temperature_2m,weather_code&daily=sunrise,sunset${fahrenheit ? '&temperature_unit=fahrenheit' : ''}`;
@@ -269,6 +276,7 @@ new MutationObserver(() => {
     }
     restoreOpen();
     tickClock();
+    if (!skyAsked) loadSky();
     if (query) {
         const results = document.getElementById('ck-results');
         if (results && results.hidden) runSearch();

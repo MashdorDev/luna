@@ -74,8 +74,9 @@
 .ck-daybar u { position: absolute; top: 0; bottom: 0; background: var(--color-widget-background-highlight); }
 .ck-daybar b { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--color-text-highlight); }
 .ck-daylab { display: flex; justify-content: space-between; font-size: 10.5px; color: var(--color-text-subdue); margin-top: 3px; }
-.ck-zones { display: flex; justify-content: space-between; margin-top: 12px; font-size: 13px; color: var(--color-text-subdue); }
-.ck-zones b { display: block; font-weight: 400; color: var(--color-text-base); font-variant-numeric: tabular-nums; }
+.ck-zones { margin-top: 12px; font-size: 13px; color: var(--color-text-subdue); }
+.ck-zones > span { display: flex; justify-content: space-between; padding: 1.5px 0; }
+.ck-zones b { font-weight: 400; color: var(--color-text-base); font-variant-numeric: tabular-nums; }
 .ck-side section { border-top: 1px solid var(--color-separator); padding-top: 14px; margin-top: 18px; }
 .ck-cap { font-size: 13px; color: var(--color-text-subdue); margin-bottom: 6px; }
 .ck-sub { color: var(--color-text-base); font-size: 13px; }

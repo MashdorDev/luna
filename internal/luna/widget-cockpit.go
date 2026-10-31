@@ -191,6 +191,7 @@ type cockpitEvent struct {
 	Calendar string
 	holiday  bool
 	start    time.Time
+	until    time.Time
 }
 
 func (widget *cockpitWidget) initialize() error {
@@ -255,7 +256,6 @@ func (widget *cockpitWidget) update(ctx context.Context) {
 		widget.lookups = cockpitLookups{companies: map[int]cockpitCompany{}}
 		widget.lookupsAt = time.Now()
 	}
-	widget.lookupSolidtime()
 	now := time.Now()
 	if widget.lookups.zone != nil {
 		now = now.In(widget.lookups.zone)
@@ -311,7 +311,7 @@ func (widget *cockpitWidget) update(ctx context.Context) {
 		defer wg.Done()
 		upcoming := func(events []cockpitEvent) []cockpitEvent {
 			return slices.DeleteFunc(slices.Clone(events), func(event cockpitEvent) bool {
-				return event.start.Before(now.Add(-time.Hour))
+				return event.until.Before(now)
 			})
 		}
 		// glance-ical refetches the whole feed each call: polling it every few minutes
@@ -515,8 +515,6 @@ review:search(query:"is:pr is:open review-requested:@me archived:false",type:ISS
 }
 
 func (widget *cockpitWidget) glitchTipOrgs() ([]string, error) {
-	widget.lookups.mu.Lock()
-	defer widget.lookups.mu.Unlock()
 	if widget.lookups.orgs != nil {
 		return widget.lookups.orgs, nil
 	}
@@ -604,7 +602,7 @@ func (widget *cockpitWidget) fetchGlitchTip(now time.Time) ([]cockpitRow, error)
 	if len(items) > cockpitDrawerErrors {
 		more := cockpitItem{
 			Title: fmt.Sprintf("All %d in GlitchTip", len(items)),
-			URL:   fmt.Sprintf("%s/%s/issues", g.URL, issueOrg[groups[0].id]),
+			URL:   ternary(len(orgs) == 1, fmt.Sprintf("%s/%s/issues", g.URL, orgs[0]), g.URL),
 		}
 		items = append(items[:cockpitDrawerErrors:cockpitDrawerErrors], more)
 	}
@@ -622,8 +620,6 @@ func (widget *cockpitWidget) fetchGlitchTip(now time.Time) ([]cockpitRow, error)
 }
 
 func (widget *cockpitWidget) planeProjects() ([]cockpitProject, error) {
-	widget.lookups.mu.Lock()
-	defer widget.lookups.mu.Unlock()
 	if widget.lookups.projects != nil {
 		return widget.lookups.projects, nil
 	}
@@ -771,6 +767,13 @@ func (widget *cockpitWidget) invoiceCompany(index int) (cockpitCompany, error) {
 		if currency.Get("id").String() == company.CurrencyID {
 			company.Currency = currency.Get("code").String()
 		}
+	}
+	// Don't cache a half answer for an hour: totals would label themselves with nothing
+	if company.Currency == "" {
+		return cockpitCompany{}, errors.New("no company currency")
+	}
+	if company.Name == "" {
+		company.Name = "Invoice Ninja"
 	}
 	widget.lookups.mu.Lock()
 	widget.lookups.companies[index] = company
@@ -933,7 +936,8 @@ func (widget *cockpitWidget) solidtimeRequest(path string) (gjson.Result, error)
 	return cockpitFetch(request)
 }
 
-// Runs before the other sources start: the user's time zone decides what "today" is for all of them
+// Runs inside the hours fetch so a hung Solidtime can't delay the other sources. The time zone it
+// finds decides what "today" means for them from the next update on.
 func (widget *cockpitWidget) lookupSolidtime() {
 	if widget.Solidtime.URL == "" || widget.lookups.solidOrg != "" {
 		return
@@ -948,7 +952,12 @@ func (widget *cockpitWidget) lookupSolidtime() {
 		slog.Error("Cockpit Solidtime lookup failed", "error", cockpitErrorText(err))
 		return
 	}
-	widget.lookups.solidOrg = memberships.Get("data.0.organization.id").String()
+	// A personal org can come first, the one Dor runs is where the hours are
+	org := memberships.Get(`data.#(role=="owner").organization.id`).String()
+	if org == "" {
+		org = memberships.Get("data.0.organization.id").String()
+	}
+	widget.lookups.solidOrg = org
 	if zone, err := time.LoadLocation(me.Get("data.timezone").String()); err == nil {
 		widget.lookups.zone = zone
 	}
@@ -964,6 +973,7 @@ func (widget *cockpitWidget) fetchHours(now time.Time) (cockpitHours, error) {
 	if widget.Solidtime.URL == "" {
 		return cockpitHours{}, nil
 	}
+	widget.lookupSolidtime()
 	if widget.lookups.solidOrg == "" {
 		return cockpitHours{}, errors.New("no answer")
 	}
@@ -976,6 +986,9 @@ func (widget *cockpitWidget) fetchHours(now time.Time) (cockpitHours, error) {
 		seconds[day.Get("date").String()] = day.Get("duration").Float()
 	}
 
+	if widget.lookups.zone != nil {
+		now = now.In(widget.lookups.zone)
+	}
 	today := startOfCockpitDay(now)
 	first := today.AddDate(0, 0, -(int(today.Weekday())-int(widget.lookups.weekStart)+7)%7)
 	hours := cockpitHours{Days: make([]cockpitDay, 7)}
@@ -1028,17 +1041,21 @@ func (widget *cockpitWidget) fetchNextEvents(now time.Time) ([]cockpitEvent, err
 			answered++
 			for _, entry := range data.Get("events").Array() {
 				start, err := time.Parse(time.RFC3339, entry.Get("start").String())
-				if err != nil || start.Before(now.Add(-time.Hour)) {
+				if err != nil {
 					continue
 				}
 				event := cockpitEvent{
 					Name: entry.Get("name").String(), Calendar: calendar.Name, holiday: calendar.Holidays, start: start,
-					At: start.Format(time.RFC3339),
+					At: start.Format(time.RFC3339), until: start.Add(time.Hour),
 				}
 				// All-day events come as midnight UTC, which would land on the evening before west of Greenwich
 				if entry.Get("all_day").Bool() {
 					event.start = time.Date(start.Year(), start.Month(), start.Day(), 0, 0, 0, 0, now.Location())
 					event.At, event.Date = "", start.Format("2006-01-02")
+					event.until = event.start.AddDate(0, 0, 1)
+				}
+				if event.until.Before(now) {
+					continue
 				}
 				events = append(events, event)
 			}

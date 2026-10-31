@@ -68,7 +68,7 @@
 .ck-after { margin-top: 16px; font-size: 13px; color: var(--color-text-subdue); text-align: right; }
 
 .ck-side { font-size: 14px; }
-.ck-time { font-size: 62px; line-height: 1; letter-spacing: -.045em; font-weight: 500; font-variant-numeric: tabular-nums; }
+.ck-time { font-size: 52px; white-space: nowrap; line-height: 1; letter-spacing: -.045em; font-weight: 500; font-variant-numeric: tabular-nums; }
 .ck-date { color: var(--color-text-base); margin-top: 8px; }
 .ck-daybar { position: relative; height: 6px; margin-top: 12px; border-radius: 3px; background: var(--color-widget-background); overflow: hidden; }
 .ck-daybar u { position: absolute; top: 0; bottom: 0; background: var(--color-widget-background-highlight); }
@@ -119,3 +119,5 @@
 
 .ck-go b { font-weight: 500; }
 .ck-event + .ck-event { margin-top: 8px; }
+
+.ck-daylab[hidden], .ck-daybar[hidden], .ck-zones [hidden] { display: none; }

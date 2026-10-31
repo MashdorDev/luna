@@ -40,7 +40,7 @@
         <div class="visually-hidden" aria-label="{{ .StateText }}"></div>
     </li>
     {{- else }}
-    <div class="text-center">No containers available to show.</div>
+    <div class="text-center">{{ if and .ShowFailingOnly .Error }}Could not read container status{{ else if and .ShowFailingOnly .Total }}All {{ .Total }} container{{ if ne .Total 1 }}s{{ end }} running{{ else }}No containers available to show.{{ end }}</div>
     {{- end }}
 </ul>
 {{- end }}

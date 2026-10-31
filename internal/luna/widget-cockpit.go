@@ -28,6 +28,7 @@ const (
 	cockpitCalendarsEvery = 30 * time.Minute
 	cockpitDrawerErrors   = 10
 	cockpitNextEvents     = 4
+	cockpitNextHolidays   = 1
 )
 
 // update holds the page lock while it fetches, so a hung source can't be allowed the default 15 seconds
@@ -93,8 +94,9 @@ type cockpitWidget struct {
 		Token string `yaml:"token"`
 	} `yaml:"solidtime"`
 	Calendars []struct {
-		Name string `yaml:"name"`
-		URL  string `yaml:"url"`
+		Name     string `yaml:"name"`
+		URL      string `yaml:"url"`
+		Holidays bool   `yaml:"holidays"`
 	} `yaml:"calendars"`
 	Location string `yaml:"location"`
 	Zones    []struct {
@@ -169,6 +171,7 @@ type cockpitEvent struct {
 	Name     string
 	When     string
 	Calendar string
+	holiday  bool
 	start    time.Time
 }
 
@@ -877,10 +880,16 @@ func (widget *cockpitWidget) fetchNextEvents(now time.Time) ([]cockpitEvent, err
 				if err != nil || start.Before(now.Add(-time.Hour)) {
 					continue
 				}
-				events = append(events, cockpitEvent{
-					Name: entry.Get("name").String(), Calendar: calendar.Name, start: start,
+				event := cockpitEvent{
+					Name: entry.Get("name").String(), Calendar: calendar.Name, holiday: calendar.Holidays, start: start,
 					When: start.In(time.Local).Format("Mon 2 Jan, 3:04 PM"),
-				})
+				}
+				// All-day events come as midnight UTC, which would land on the evening before in Toronto
+				if entry.Get("all_day").Bool() {
+					event.start = time.Date(start.Year(), start.Month(), start.Day(), 0, 0, 0, 0, time.Local)
+					event.When = start.Format("Mon 2 Jan")
+				}
+				events = append(events, event)
 			}
 		}()
 	}
@@ -898,6 +907,15 @@ func (widget *cockpitWidget) fetchNextEvents(now time.Time) ([]cockpitEvent, err
 	})
 	events = slices.CompactFunc(events, func(a, b cockpitEvent) bool {
 		return a.start.Equal(b.start) && strings.EqualFold(a.Name, b.Name)
+	})
+	// Holiday feeds would otherwise fill the list before any real meeting
+	holidays := 0
+	events = slices.DeleteFunc(events, func(event cockpitEvent) bool {
+		if !event.holiday {
+			return false
+		}
+		holidays++
+		return holidays > cockpitNextHolidays
 	})
 	return events[:min(len(events), cockpitNextEvents)], lastErr
 }

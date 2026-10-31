@@ -46,14 +46,14 @@
 
         <div id="ck-board">
             <h2 class="ck-h">Needs you</h2>
-            {{ range .Now }}{{ template "cockpit-row" . }}{{ else }}<div class="ck-clear">Nothing right now</div>{{ end }}
+            {{ range .Failures }}<p class="ck-fail">Could not read {{ . }}</p>{{ end }}
+            {{ range .Now }}{{ template "cockpit-row" . }}{{ else }}{{ if not .Failures }}<div class="ck-clear">Nothing right now</div>{{ end }}{{ end }}
 
             {{ if .Later }}
             <h2 class="ck-h">Can wait</h2>
             <div class="ck-quiet">{{ range .Later }}{{ template "cockpit-row" . }}{{ end }}</div>
             {{ end }}
 
-            {{ range .Failures }}<p class="ck-fail">Could not read {{ . }}</p>{{ end }}
         </div>
         <div class="ck-after">Updated <span {{ dynamicRelativeTimeAttrs .Updated }}></span> ago</div>
     </div>
@@ -62,13 +62,16 @@
         <div class="ck-time" data-ck-clock></div>
         <div class="ck-date"><span data-ck-date></span>{{ with .Sky }}, {{ .Temperature }}&deg; {{ .Condition }}{{ end }}</div>
         {{ with .Sky }}{{ if .Sunrise }}
-        <div class="ck-daybar" aria-hidden="true"><u style="left:{{ .RiseAt }}%;width:calc({{ .SetAt }}% - {{ .RiseAt }}%)"></u><b data-ck-now></b></div>
+        <div class="ck-daybar" aria-hidden="true"><u style="left:{{ .RiseAt }}%;width:calc({{ .SetAt }}% - {{ .RiseAt }}%)"></u><b data-ck-now="{{ .Timezone }}"></b></div>
         <div class="ck-daylab"><span>sunrise {{ .Sunrise }}</span><span>sunset {{ .Sunset }}</span></div>
         {{ end }}{{ end }}
         {{ if .Zones }}<div class="ck-zones">{{ range .Zones }}<span>{{ .Label }}<b data-ck-zone="{{ .Timezone }}"></b></span>{{ end }}</div>{{ end }}
 
-        {{ with .Next }}
-        <section><div class="ck-cap">Next</div><div>{{ .Name }}</div><div class="ck-sub">{{ .When }}</div></section>
+        {{ if .Next }}
+        <section class="ck-next">
+            <div class="ck-cap">Next</div>
+            {{ range .Next }}<div class="ck-event"><div dir="auto">{{ .Name }}</div><div class="ck-sub">{{ .When }}{{ if .Calendar }}, {{ .Calendar }}{{ end }}</div></div>{{ end }}
+        </section>
         {{ end }}
 
         <section class="ck-hours">

@@ -18,7 +18,7 @@
 .ck-apps { display: grid; grid-template-columns: repeat(8, 1fr); gap: 4px; margin: 14px -6px 0; }
 .ck-app { position: relative; display: flex; flex-direction: column; align-items: center; gap: 7px; padding: 10px 2px 8px; border-radius: 10px; font-size: 12.5px; color: var(--color-text-base); text-align: center; }
 .ck-app b { font-weight: 400; }
-.ck-app:hover, .ck-app.cur { background: var(--color-widget-background); color: var(--color-text-highlight); }
+.ck-app:hover, .ck-app.cur, .ck-app.hit { background: var(--color-widget-background); color: var(--color-text-highlight); }
 .ck-app img { width: 30px; height: 30px; border-radius: 7px; background: #fff; padding: 3px; }
 .ck-app i { position: absolute; top: 7px; right: calc(50% - 21px); width: 11px; height: 11px; border-radius: 50%; background: var(--color-negative); border: 2px solid var(--color-background); }
 
@@ -116,3 +116,6 @@
     .ck-item { grid-template-columns: minmax(0, 1fr) auto; }
     .ck-item b { white-space: normal; }
 }
+
+.ck-go b { font-weight: 500; }
+.ck-event + .ck-event { margin-top: 8px; }

@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -23,8 +24,31 @@ var cockpitWidgetTemplate = mustParseTemplate("cockpit.html", "widget-base.html"
 
 const (
 	cockpitQuotesEvery  = 15 * time.Minute
+	cockpitSkyEvery     = 30 * time.Minute
 	cockpitDrawerErrors = 10
+	cockpitNextEvents   = 3
 )
+
+// update holds the page lock while it fetches, so a hung source can't be allowed the default 15 seconds
+var cockpitHTTPClient = &http.Client{Timeout: 8 * time.Second}
+
+var cockpitSecretPattern = regexp.MustCompile(`(?i)(api_?key|token)=[^&\s"]+`)
+
+// Never show URLs on the page or log query strings: they hold API keys, internal addresses and calendar emails
+func cockpitErrorText(err error) string {
+	var requestErr *url.Error
+	if errors.As(err, &requestErr) {
+		return "no answer"
+	}
+	return cockpitSecretPattern.ReplaceAllString(err.Error(), "$1=redacted")
+}
+
+// Whole calendar days from a to b, safe across daylight saving changes
+func cockpitDaysBetween(a, b time.Time) int {
+	from := time.Date(a.Year(), a.Month(), a.Day(), 0, 0, 0, 0, time.UTC)
+	to := time.Date(b.Year(), b.Month(), b.Day(), 0, 0, 0, 0, time.UTC)
+	return int(to.Sub(from).Hours() / 24)
+}
 
 type cockpitWidget struct {
 	widgetBase `yaml:",inline"`
@@ -32,6 +56,7 @@ type cockpitWidget struct {
 		Title string          `yaml:"title"`
 		URL   string          `yaml:"url"`
 		Icon  customIconField `yaml:"icon"`
+		Site  string          `yaml:"site"`
 		Down  bool            `yaml:"-"`
 	} `yaml:"apps"`
 	Sites []struct {
@@ -66,9 +91,12 @@ type cockpitWidget struct {
 		Org   string `yaml:"org"`
 		Token string `yaml:"token"`
 	} `yaml:"solidtime"`
-	CalendarURL string `yaml:"calendar-url"`
-	Location    string `yaml:"location"`
-	Zones       []struct {
+	Calendars []struct {
+		Name string `yaml:"name"`
+		URL  string `yaml:"url"`
+	} `yaml:"calendars"`
+	Location string `yaml:"location"`
+	Zones    []struct {
 		Timezone string `yaml:"timezone"`
 		Label    string `yaml:"label"`
 	} `yaml:"zones"`
@@ -78,18 +106,19 @@ type cockpitWidget struct {
 		APIKey        string `yaml:"api-key"`
 	} `yaml:"markets"`
 
-	Now       []cockpitRow  `yaml:"-"`
-	Later     []cockpitRow  `yaml:"-"`
-	Failures  []string      `yaml:"-"`
-	SiteCount int           `yaml:"-"`
-	SitesDown []string      `yaml:"-"`
-	Hours     cockpitHours  `yaml:"-"`
-	Next      *cockpitEvent `yaml:"-"`
-	Sky       *cockpitSky   `yaml:"-"`
-	Quotes    marketList    `yaml:"-"`
-	Updated   time.Time     `yaml:"-"`
+	Now       []cockpitRow   `yaml:"-"`
+	Later     []cockpitRow   `yaml:"-"`
+	Failures  []string       `yaml:"-"`
+	SiteCount int            `yaml:"-"`
+	SitesDown []string       `yaml:"-"`
+	Hours     cockpitHours   `yaml:"-"`
+	Next      []cockpitEvent `yaml:"-"`
+	Sky       *cockpitSky    `yaml:"-"`
+	Quotes    marketList     `yaml:"-"`
+	Updated   time.Time      `yaml:"-"`
 	place     *openMeteoPlaceResponseJson
 	quotesAt  time.Time
+	skyAt     time.Time
 }
 
 type cockpitItem struct {
@@ -106,6 +135,7 @@ type cockpitSegment struct {
 }
 
 type cockpitRow struct {
+	Kind  string
 	Group string
 	Tone  string
 	Big   string
@@ -133,9 +163,10 @@ type cockpitDay struct {
 }
 
 type cockpitEvent struct {
-	Name string
-	When string
-	URL  string
+	Name     string
+	When     string
+	Calendar string
+	start    time.Time
 }
 
 type cockpitSky struct {
@@ -145,6 +176,7 @@ type cockpitSky struct {
 	Sunset      string
 	RiseAt      float64
 	SetAt       float64
+	Timezone    string
 }
 
 func (widget *cockpitWidget) initialize() error {
@@ -182,7 +214,7 @@ func cockpitRequest(method, target string, headers map[string]string, body any) 
 }
 
 func cockpitFetch(request *http.Request) (gjson.Result, error) {
-	response, err := defaultHTTPClient.Do(request)
+	response, err := cockpitHTTPClient.Do(request)
 	if err != nil {
 		return gjson.Result{}, err
 	}
@@ -218,12 +250,12 @@ func (widget *cockpitWidget) update(ctx context.Context) {
 			result, err := fetch()
 			mu.Lock()
 			defer mu.Unlock()
-			if err != nil {
-				slog.Error("Cockpit source failed", "source", name, "error", err)
-				failures = append(failures, name+": "+err.Error())
-				return
-			}
 			rows = append(rows, result...)
+			if err != nil {
+				text := cockpitErrorText(err)
+				slog.Error("Cockpit source failed", "source", name, "error", text)
+				failures = append(failures, name+": "+text)
+			}
 		}()
 	}
 
@@ -236,8 +268,8 @@ func (widget *cockpitWidget) update(ctx context.Context) {
 	}
 
 	var hours cockpitHours
-	var next *cockpitEvent
-	var sky *cockpitSky
+	next := widget.Next
+	sky := widget.Sky
 	var quotes marketList
 	var down []string
 
@@ -246,23 +278,32 @@ func (widget *cockpitWidget) update(ctx context.Context) {
 		defer wg.Done()
 		var err error
 		if hours, err = widget.fetchHours(now); err != nil {
-			slog.Error("Cockpit hours failed", "error", err)
-			hours.Error = "Solidtime: " + err.Error()
+			text := cockpitErrorText(err)
+			slog.Error("Cockpit hours failed", "error", text)
+			hours.Error = "Solidtime: " + text
 		}
 	}()
 	go func() {
 		defer wg.Done()
-		var err error
-		if next, err = widget.fetchNextEvent(); err != nil {
-			slog.Error("Cockpit calendar failed", "error", err)
+		fresh, err := widget.fetchNextEvents(now)
+		if err != nil {
+			slog.Error("Cockpit calendar failed", "error", cockpitErrorText(err))
+			return
 		}
+		next = fresh
 	}()
 	go func() {
 		defer wg.Done()
-		var err error
-		if sky, err = widget.fetchSky(); err != nil {
-			slog.Error("Cockpit weather failed", "error", err)
+		if now.Sub(widget.skyAt) < cockpitSkyEvery {
+			return
 		}
+		fresh, err := widget.fetchSky()
+		if err != nil {
+			slog.Error("Cockpit weather failed", "error", cockpitErrorText(err))
+			return
+		}
+		sky = fresh
+		widget.skyAt = now
 	}()
 	go func() {
 		defer wg.Done()
@@ -271,8 +312,10 @@ func (widget *cockpitWidget) update(ctx context.Context) {
 			quotes = widget.Quotes
 			return
 		}
-		quotes = widget.fetchQuotes()
-		widget.quotesAt = now
+		var complete bool
+		if quotes, complete = widget.fetchQuotes(); complete {
+			widget.quotesAt = now
+		}
 	}()
 
 	requests := make([]*SiteStatusRequest, len(widget.Sites))
@@ -283,7 +326,7 @@ func (widget *cockpitWidget) update(ctx context.Context) {
 	wg.Wait()
 
 	if err != nil {
-		failures = append(failures, "Sites: "+err.Error())
+		failures = append(failures, "Sites: "+cockpitErrorText(err))
 	} else {
 		for i := range widget.Sites {
 			status := statuses[i]
@@ -302,28 +345,36 @@ func (widget *cockpitWidget) update(ctx context.Context) {
 			items[i] = cockpitItem{Title: title, Tag: "not responding", Tone: "hot", URL: "/infra"}
 		}
 		rows = append(rows, cockpitRow{
-			Group: "down", Tone: "hot", Big: strconv.Itoa(len(down)),
+			Kind: "down", Group: "down", Tone: "hot", Big: strconv.Itoa(len(down)),
 			Label: pluralWord(len(down), "site down", "sites down"), Sub: strings.Join(down, ", "), Hint: "See sites", Items: items,
 		})
 	}
 
 	for i := range widget.Apps {
-		widget.Apps[i].Down = slices.Contains(down, widget.Apps[i].Title)
+		widget.Apps[i].Down = slices.Contains(down, widget.Apps[i].Title) || slices.Contains(down, widget.Apps[i].Site)
 	}
 
 	order := map[string]int{"down": 0, "money": 1, "fail": 2, "review": 3, "err": 4, "iss": 5, "owed": 6, "draft": 7}
-	slices.SortStableFunc(rows, func(a, b cockpitRow) int { return order[a.Group] - order[b.Group] })
+	// Sources finish in any order, so break ties on Group to keep rows from swapping between updates
+	slices.SortStableFunc(rows, func(a, b cockpitRow) int {
+		if order[a.Kind] != order[b.Kind] {
+			return order[a.Kind] - order[b.Kind]
+		}
+		return strings.Compare(a.Group, b.Group)
+	})
 
-	widget.Now, widget.Later = nil, nil
+	var needs, later []cockpitRow
 	for _, row := range rows {
 		if row.Tone != "" {
-			widget.Now = append(widget.Now, row)
+			needs = append(needs, row)
 		} else {
-			widget.Later = append(widget.Later, row)
+			later = append(later, row)
 		}
 	}
 
 	slices.Sort(failures)
+	widget.Now = needs
+	widget.Later = later
 	widget.Failures = failures
 	widget.SiteCount = len(widget.Sites)
 	widget.SitesDown = down
@@ -332,7 +383,10 @@ func (widget *cockpitWidget) update(ctx context.Context) {
 	widget.Sky = sky
 	widget.Quotes = quotes
 	widget.Updated = now
-	widget.withError(nil)
+	widget.withError(nil).scheduleNextUpdate()
+
+	// page.js refetches and morphs this widget in every open tab
+	publishEvent("custom-api:data_changed", map[string]any{"widget_id": widget.GetID(), "title": widget.Title})
 }
 
 func pluralWord(n int, one, many string) string {
@@ -357,7 +411,12 @@ review:search(query:"is:pr is:open review-requested:@me archived:false",type:ISS
 		return nil, err
 	}
 	if !data.Get("data.mine").Exists() {
-		return nil, errors.New(data.Get("errors.0.message").String())
+		return nil, errors.New("GitHub sent no data")
+	}
+	// GitHub answers 200 with both data and errors when the token can't read some PRs
+	var partial error
+	if data.Get("errors").Exists() {
+		partial = errors.New("some PRs are hidden, the token can't read them")
 	}
 
 	var rows []cockpitRow
@@ -406,7 +465,7 @@ review:search(query:"is:pr is:open review-requested:@me archived:false",type:ISS
 			sub = "All on " + names[0]
 		}
 		rows = append(rows, cockpitRow{
-			Group: "fail", Tone: "hot", Big: strconv.Itoa(len(failing)),
+			Kind: "fail", Group: "fail", Tone: "hot", Big: strconv.Itoa(len(failing)),
 			Label: pluralWord(len(failing), "PR failing checks", "PRs failing checks"), Sub: sub,
 			Hint: "See PRs", Items: failItems, Pips: pips,
 		})
@@ -429,12 +488,12 @@ review:search(query:"is:pr is:open review-requested:@me archived:false",type:ISS
 	}
 	if len(reviewItems) > 0 {
 		rows = append(rows, cockpitRow{
-			Group: "review", Tone: "warn", Big: strconv.Itoa(len(reviewItems)),
+			Kind: "review", Group: "review", Tone: "warn", Big: strconv.Itoa(len(reviewItems)),
 			Label: pluralWord(len(reviewItems), "review waiting on you", "reviews waiting on you"),
 			Sub:   strings.Join(reviewRepos, ", "), Hint: "See reviews", Items: reviewItems,
 		})
 	}
-	return rows, nil
+	return rows, partial
 }
 
 func (widget *cockpitWidget) fetchGlitchTip(now time.Time) ([]cockpitRow, error) {
@@ -504,7 +563,7 @@ func (widget *cockpitWidget) fetchGlitchTip(now time.Time) ([]cockpitRow, error)
 		sub += fmt.Sprintf(", %d projects", len(projects))
 	}
 	return []cockpitRow{{
-		Group: "err", Big: strconv.Itoa(len(groups)), Label: pluralWord(len(groups), "error", "errors"),
+		Kind: "err", Group: "err", Big: strconv.Itoa(len(groups)), Label: pluralWord(len(groups), "error", "errors"),
 		Sub: sub, Hint: "See errors", Items: items, Spark: spark,
 	}}, nil
 }
@@ -522,9 +581,8 @@ func (widget *cockpitWidget) fetchPlane(now time.Time) ([]cockpitRow, error) {
 	}
 
 	var doing, todo []cockpitItem
-	backlog := 0
+	backlog, overdue := 0, 0
 	nextDue := -1
-	today := startOfCockpitDay(now)
 	for _, issue := range data.Get("results").Array() {
 		group := issue.Get("state.group").String()
 		if group == "backlog" {
@@ -537,10 +595,15 @@ func (widget *cockpitWidget) fetchPlane(now time.Time) ([]cockpitRow, error) {
 		seq := issue.Get("sequence_id").String()
 		tag := strings.ToLower(issue.Get("state.name").String())
 		if due, err := time.ParseInLocation("2006-01-02", issue.Get("target_date").String(), now.Location()); err == nil {
-			days := int(due.Sub(today).Hours() / 24)
-			tag += fmt.Sprintf(", %dd", days)
-			if nextDue < 0 || days < nextDue {
-				nextDue = days
+			days := cockpitDaysBetween(now, due)
+			if days < 0 {
+				tag += fmt.Sprintf(", %dd overdue", -days)
+				overdue++
+			} else {
+				tag += fmt.Sprintf(", %dd", days)
+				if nextDue < 0 || days < nextDue {
+					nextDue = days
+				}
 			}
 		}
 		item := cockpitItem{
@@ -559,6 +622,9 @@ func (widget *cockpitWidget) fetchPlane(now time.Time) ([]cockpitRow, error) {
 		return nil, nil
 	}
 	sub := fmt.Sprintf("%d in progress", len(doing))
+	if overdue > 0 {
+		sub += fmt.Sprintf(", %d overdue", overdue)
+	}
 	if nextDue >= 0 {
 		sub += fmt.Sprintf(", next due in %d days", nextDue)
 	}
@@ -566,7 +632,7 @@ func (widget *cockpitWidget) fetchPlane(now time.Time) ([]cockpitRow, error) {
 		sub += ", older issues not shown"
 	}
 	return []cockpitRow{{
-		Group: "iss", Big: strconv.Itoa(active), Label: p.Label + " issues active", Sub: sub, Hint: "See issues",
+		Kind: "iss", Group: "iss", Big: strconv.Itoa(active), Label: p.Label + " issues active", Sub: sub, Hint: "See issues",
 		Items: append(doing, todo...),
 		Stack: []cockpitSegment{
 			{Flex: float64(len(doing)), Color: "positive", Opacity: 1},
@@ -601,9 +667,8 @@ func (widget *cockpitWidget) fetchInvoices(index int, now time.Time) ([]cockpitR
 		return nil, err
 	}
 
-	today := startOfCockpitDay(now)
 	lateTotal, owedTotal, draftTotal := 0.0, 0.0, 0.0
-	oldest := 0
+	oldest, lateOther, owedOther, draftOther := 0, 0, 0, 0
 	clients := map[string]bool{}
 	var lateItems, owedItems, draftItems []cockpitItem
 	var stack []cockpitSegment
@@ -620,7 +685,7 @@ func (widget *cockpitWidget) fetchInvoices(index int, now time.Time) ([]cockpitR
 		due, err := time.ParseInLocation("2006-01-02", invoice.Get("due_date").String(), now.Location())
 		days := 0
 		if err == nil {
-			days = int(today.Sub(due).Hours() / 24)
+			days = cockpitDaysBetween(due, now)
 		}
 		suffix := ""
 		if !counted(invoice) {
@@ -630,6 +695,8 @@ func (widget *cockpitWidget) fetchInvoices(index int, now time.Time) ([]cockpitR
 			if counted(invoice) {
 				lateTotal += balance
 				stack = append(stack, cockpitSegment{Flex: balance, Color: "negative", Opacity: ternary(days > 30, 1.0, 0.5)})
+			} else {
+				lateOther++
 			}
 			oldest = max(oldest, days)
 			clients[invoice.Get("client.display_name").String()] = true
@@ -641,6 +708,8 @@ func (widget *cockpitWidget) fetchInvoices(index int, now time.Time) ([]cockpitR
 		}
 		if counted(invoice) {
 			owedTotal += balance
+		} else {
+			owedOther++
 		}
 		tag := intl.Sprintf("%.0f", balance) + suffix
 		if err == nil {
@@ -649,12 +718,18 @@ func (widget *cockpitWidget) fetchInvoices(index int, now time.Time) ([]cockpitR
 		owedItems = append(owedItems, cockpitItem{Title: label(invoice), Tag: tag, URL: link(invoice.Get("id").String())})
 	}
 	for _, invoice := range drafts.Get("data").Array() {
-		draftTotal += invoice.Get("amount").Float()
-		draftItems = append(draftItems, cockpitItem{
-			Title: label(invoice), Tag: intl.Sprintf("%.0f", invoice.Get("amount").Float()), URL: link(invoice.Get("id").String()),
-		})
+		tag := intl.Sprintf("%.0f", invoice.Get("amount").Float())
+		if counted(invoice) {
+			draftTotal += invoice.Get("amount").Float()
+		} else {
+			draftOther++
+			tag += " other currency"
+		}
+		draftItems = append(draftItems, cockpitItem{Title: label(invoice), Tag: tag, URL: link(invoice.Get("id").String())})
 	}
 
+	truncated := unpaid.Get("meta.pagination.total").Int() > int64(len(unpaid.Get("data").Array()))
+	const otherNote = ", other currencies not counted"
 	var rows []cockpitRow
 	if len(lateItems) > 0 {
 		from := fmt.Sprintf("%d clients", len(clients))
@@ -664,24 +739,41 @@ func (widget *cockpitWidget) fetchInvoices(index int, now time.Time) ([]cockpitR
 			}
 		}
 		sub := fmt.Sprintf("Oldest is %d days overdue", oldest)
-		if unpaid.Get("meta.pagination.total").Int() > int64(len(unpaid.Get("data").Array())) {
+		if truncated {
 			sub += ", over 100 unpaid, total too low"
 		}
+		big, what := intl.Sprintf("%.0f", lateTotal), company.Currency+" late from "+from
+		if lateOther == len(lateItems) {
+			big, what = strconv.Itoa(lateOther), pluralWord(lateOther, "invoice", "invoices")+" late from "+from
+		} else if lateOther > 0 {
+			sub += otherNote
+		}
 		rows = append(rows, cockpitRow{
-			Group: "money", Tone: "hot", Big: intl.Sprintf("%.0f", lateTotal),
-			Label: company.Currency + " late from " + from, Sub: sub, Hint: "See invoices", Items: lateItems, Stack: stack,
+			Kind: "money", Group: fmt.Sprintf("money-%d", index), Tone: "hot", Big: big,
+			Label: what, Sub: sub, Hint: "See invoices", Items: lateItems, Stack: stack,
 		})
 	}
 	if len(owedItems) > 0 {
+		sub := company.Name
+		if owedOther > 0 {
+			sub += otherNote
+		}
+		if truncated {
+			sub += ", over 100 unpaid, total too low"
+		}
 		rows = append(rows, cockpitRow{
-			Group: "owed", Big: intl.Sprintf("%.0f", owedTotal), Label: company.Currency + " not due yet",
-			Sub: company.Name, Hint: "See invoices", Items: owedItems,
+			Kind: "owed", Group: fmt.Sprintf("owed-%d", index), Big: intl.Sprintf("%.0f", owedTotal), Label: company.Currency + " not due yet",
+			Sub: sub, Hint: "See invoices", Items: owedItems,
 		})
 	}
 	if len(draftItems) > 0 {
+		sub := fmt.Sprintf("%d not sent, %s", len(draftItems), company.Name)
+		if draftOther > 0 {
+			sub += otherNote
+		}
 		rows = append(rows, cockpitRow{
-			Group: "draft", Big: intl.Sprintf("%.0f", draftTotal), Label: company.Currency + " in draft",
-			Sub: fmt.Sprintf("%d not sent, %s", len(draftItems), company.Name), Hint: "See drafts", Items: draftItems,
+			Kind: "draft", Group: fmt.Sprintf("draft-%d", index), Big: intl.Sprintf("%.0f", draftTotal), Label: company.Currency + " in draft",
+			Sub: sub, Hint: "See drafts", Items: draftItems,
 		})
 	}
 	return rows, nil
@@ -736,30 +828,51 @@ func (widget *cockpitWidget) fetchHours(now time.Time) (cockpitHours, error) {
 	return hours, nil
 }
 
-func (widget *cockpitWidget) fetchNextEvent() (*cockpitEvent, error) {
-	if widget.CalendarURL == "" {
-		return nil, nil
+// fetchNextEvents merges every calendar into one list. One failing feed only loses that
+// feed's events, but if all fail the caller keeps the previous list.
+func (widget *cockpitWidget) fetchNextEvents(now time.Time) ([]cockpitEvent, error) {
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	var events []cockpitEvent
+	var lastErr error
+	answered := 0
+
+	for _, calendar := range widget.Calendars {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			request, err := cockpitRequest("GET", calendar.URL, nil, nil)
+			var data gjson.Result
+			if err == nil {
+				data, err = cockpitFetch(request)
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if err != nil {
+				lastErr = fmt.Errorf("%s: %s", calendar.Name, cockpitErrorText(err))
+				slog.Error("Cockpit calendar failed", "calendar", calendar.Name, "error", cockpitErrorText(err))
+				return
+			}
+			answered++
+			for _, entry := range data.Get("events").Array() {
+				start, err := time.Parse(time.RFC3339, entry.Get("start").String())
+				if err != nil || start.Before(now.Add(-time.Hour)) {
+					continue
+				}
+				events = append(events, cockpitEvent{
+					Name: entry.Get("name").String(), Calendar: calendar.Name, start: start,
+					When: start.In(time.Local).Format("Mon 2 Jan, 3:04 PM"),
+				})
+			}
+		}()
 	}
-	request, err := cockpitRequest("GET", widget.CalendarURL, nil, nil)
-	if err != nil {
-		return nil, err
+	wg.Wait()
+
+	if answered == 0 && lastErr != nil {
+		return nil, lastErr
 	}
-	data, err := cockpitFetch(request)
-	if err != nil {
-		return nil, err
-	}
-	first := data.Get("events.0")
-	if !first.Exists() {
-		return nil, nil
-	}
-	start, err := time.Parse(time.RFC3339, first.Get("start").String())
-	if err != nil {
-		return nil, err
-	}
-	return &cockpitEvent{
-		Name: first.Get("name").String(), URL: first.Get("url").String(),
-		When: start.In(time.Local).Format("Mon 2 Jan, 3:04 PM"),
-	}, nil
+	slices.SortStableFunc(events, func(a, b cockpitEvent) int { return a.start.Compare(b.start) })
+	return events[:min(len(events), cockpitNextEvents)], nil
 }
 
 func (widget *cockpitWidget) fetchSky() (*cockpitSky, error) {
@@ -777,7 +890,7 @@ func (widget *cockpitWidget) fetchSky() (*cockpitSky, error) {
 	if err != nil {
 		return nil, err
 	}
-	sky := &cockpitSky{Temperature: current.Temperature, Condition: strings.ToLower(current.WeatherCodeAsString())}
+	sky := &cockpitSky{Temperature: current.Temperature, Condition: strings.ToLower(current.WeatherCodeAsString()), Timezone: widget.place.Timezone}
 
 	target := fmt.Sprintf("https://api.open-meteo.com/v1/forecast?latitude=%f&longitude=%f&timezone=%s&forecast_days=1&daily=sunrise,sunset",
 		widget.place.Latitude, widget.place.Longitude, url.QueryEscape(widget.place.Timezone))
@@ -801,17 +914,20 @@ func (widget *cockpitWidget) fetchSky() (*cockpitSky, error) {
 	return sky, nil
 }
 
-func (widget *cockpitWidget) fetchQuotes() marketList {
+func (widget *cockpitWidget) fetchQuotes() (marketList, bool) {
 	var quotes marketList
+	complete := true
 	for _, entry := range widget.Markets {
 		provider, err := getMarketProvider(entry.Provider)
 		if err != nil {
 			slog.Error("Cockpit market provider", "error", err)
+			complete = false
 			continue
 		}
 		result, err := provider.FetchMarkets([]marketRequest{entry.marketRequest}, entry.APIKey)
 		if err != nil {
-			slog.Error("Cockpit market failed", "symbol", entry.Symbol, "error", err)
+			slog.Error("Cockpit market failed", "symbol", entry.Symbol, "error", cockpitErrorText(err))
+			complete = false
 			// Keep the last price rather than dropping the line
 			for _, previous := range widget.Quotes {
 				if previous.Symbol == entry.Symbol {
@@ -822,5 +938,5 @@ func (widget *cockpitWidget) fetchQuotes() marketList {
 		}
 		quotes = append(quotes, result...)
 	}
-	return quotes
+	return quotes, complete
 }

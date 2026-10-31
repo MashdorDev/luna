@@ -2,6 +2,16 @@
 let openGroup = null;
 let cursor = -1;
 let query = '';
+let typed = '';
+
+// google.com, docs.dorzairi.com/x, https://a.b, localhost:3000 and 10.0.0.200:8000 go straight to the site.
+// Local addresses stay on http because they rarely have certificates.
+function addressFrom(text) {
+    if (/^https?:\/\/\S+$/i.test(text)) return text;
+    if (/^(localhost|\d{1,3}(\.\d{1,3}){3})(:\d+)?(\/\S*)?$/i.test(text)) return 'http://' + text;
+    if (/^([a-z0-9-]+\.)+[a-z]{2,}(:\d+)?([/?#]\S*)?$/i.test(text)) return 'https://' + text;
+    return null;
+}
 
 const root = () => document.querySelector('.cockpit');
 
@@ -19,13 +29,13 @@ function targets() {
     return [...document.querySelectorAll('#ck-board .ck-line')];
 }
 
-function paintCursor() {
+function paintCursor(scroll = true) {
     document.querySelectorAll('.cockpit .cur').forEach((node) => node.classList.remove('cur'));
     const list = targets();
     if (cursor >= list.length) cursor = list.length - 1;
     if (cursor > -1 && list[cursor]) {
         list[cursor].classList.add('cur');
-        list[cursor].scrollIntoView({ block: 'nearest' });
+        if (scroll) list[cursor].scrollIntoView({ block: 'nearest' });
     }
 }
 
@@ -47,8 +57,19 @@ function runSearch() {
     }
 
     const hits = [...board.querySelectorAll('.ck-item')].filter((item) => item.textContent.toLowerCase().includes(query));
-    results.replaceChildren(...hits.map((item) => item.cloneNode(true)));
-    if (!hits.length && !document.querySelector('.ck-app.hit')) {
+    const rows = hits.map((item) => item.cloneNode(true));
+    const address = addressFrom(typed);
+    if (address) {
+        const go = document.createElement('a');
+        go.className = 'ck-item ck-go';
+        go.href = address;
+        const name = document.createElement('b');
+        name.textContent = 'Go to ' + typed;
+        go.append(name);
+        rows.unshift(go);
+    }
+    results.replaceChildren(...rows);
+    if (!rows.length && !document.querySelector('.ck-app.hit')) {
         const empty = document.createElement('div');
         empty.className = 'ck-empty';
         empty.textContent = 'Enter to search the web';
@@ -72,7 +93,8 @@ function tickClock() {
     });
     document.querySelectorAll('[data-ck-zone]').forEach((n) => setText(n, time(n.dataset.ckZone)));
     document.querySelectorAll('[data-ck-now]').forEach((n) => {
-        n.style.left = ((now.getHours() * 60 + now.getMinutes()) / 14.4) + '%';
+        const [hours, minutes] = time(n.dataset.ckNow || undefined).split(':').map(Number);
+        n.style.left = ((hours * 60 + minutes) / 14.4) + '%';
     });
 }
 
@@ -86,7 +108,8 @@ document.addEventListener('click', (event) => {
 
 document.addEventListener('input', (event) => {
     if (event.target.id !== 'ck-q') return;
-    query = event.target.value.trim().toLowerCase();
+    typed = event.target.value.trim();
+    query = typed.toLowerCase();
     cursor = -1;
     runSearch();
 });
@@ -101,11 +124,16 @@ document.addEventListener('keydown', (event) => {
             cursor = Math.max(-1, cursor + (event.key === 'ArrowDown' ? 1 : -1));
             paintCursor();
         } else if (event.key === 'Enter' && query) {
-            const list = targets();
-            const pick = list[Math.max(cursor, 0)];
-            window.open(pick ? pick.href : 'https://duckduckgo.com/?q=' + encodeURIComponent(event.target.value), '_blank', 'noreferrer');
+            const pick = targets()[Math.max(cursor, 0)];
+            if (pick && pick.classList.contains('ck-go')) window.location.assign(pick.href);
+            else if (pick) window.open(pick.href, '_blank', 'noreferrer');
+            else window.location.assign('https://duckduckgo.com/?q=' + encodeURIComponent(typed));
+        } else if (event.key === 'Enter' && cursor > -1) {
+            event.preventDefault();
+            targets()[cursor]?.click();
         } else if (event.key === 'Escape') {
             event.target.value = '';
+            typed = '';
             query = '';
             event.target.blur();
             runSearch();
@@ -131,14 +159,18 @@ document.addEventListener('keydown', (event) => {
 
 new MutationObserver(() => {
     if (!root()) return;
+    // A widget update can rebuild the box, which would lose what was being typed
+    const box = document.getElementById('ck-q');
+    if (box && box.value !== typed && typed) box.value = typed;
     restoreOpen();
     tickClock();
     if (query) {
         const results = document.getElementById('ck-results');
         if (results && results.hidden) runSearch();
     }
-    if (cursor > -1 && !document.querySelector('.cockpit .cur')) paintCursor();
+    if (cursor > -1 && !document.querySelector('.cockpit .cur')) paintCursor(false);
 }).observe(document.documentElement, { childList: true, subtree: true });
 
 tickClock();
 setInterval(tickClock, 15000);
+if (window.matchMedia('(min-width: 861px)').matches) document.getElementById('ck-q')?.focus();

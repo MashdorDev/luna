@@ -1,10 +1,15 @@
 package luna
 
 import (
+	"errors"
 	"html/template"
+	"os"
+	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestRenderTemplateKeepsConcurrentRendersApart(t *testing.T) {
@@ -72,5 +77,93 @@ func TestDockerContainerStateIconReadsHealthFromStatus(t *testing.T) {
 		if got := dockerContainerStateToStateIcon(c.state, c.status); got != c.want {
 			t.Errorf("%s %q = %s, want %s", c.state, c.status, got, c.want)
 		}
+	}
+}
+
+const arrayStatusSample = `["parity"]
+name="parity"
+status="DISK_OK"
+numErrors="0"
+["disk1"]
+name="disk1"
+status="DISK_DSBL"
+numErrors="0"
+["parity2"]
+name="parity2"
+status="DISK_NP_DSBL"
+idSb=""
+numErrors="0"
+["disk2"]
+status="DISK_OK"
+numErrors="3"
+["disk3"]
+status="DISK_NP_DSBL"
+idSb="WDC_123"
+numErrors="0"
+["disk4"]
+status="DISK_OK"
+fsStatus="Unmountable: wrong or no file system"
+numErrors="0"
+["disk5"]
+status="DISK_OK"
+fsStatus="Mounted"
+numErrors="0"
+["flash"]
+status="DISK_OK"
+numErrors="0"
+`
+
+func TestParseArrayStatus(t *testing.T) {
+	total, problems := parseArrayStatus(arrayStatusSample)
+	if total != 6 {
+		t.Fatalf("total = %d, want 6", total)
+	}
+	want := []arrayDiskProblem{{"disk1", "disabled"}, {"disk2", "3 errors"}, {"disk3", "missing"}, {"disk4", "unmountable"}}
+	if !slices.Equal(problems, want) {
+		t.Fatalf("got %+v", problems)
+	}
+}
+
+func TestReadArrayStatusRejectsAStaleOrEmptyCopy(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "disks.ini")
+	if err := os.WriteFile(path, []byte(arrayStatusSample), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, _, err := readArrayStatus(path, time.Now()); err != nil {
+		t.Fatalf("fresh copy: %v", err)
+	}
+	if _, _, err := readArrayStatus(path, time.Now().Add(arrayStatusMaxAge+time.Minute)); err == nil {
+		t.Fatal("stale copy should fail")
+	}
+	if err := os.WriteFile(path, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := readArrayStatus(path, time.Now()); err == nil {
+		t.Fatal("empty copy should fail")
+	}
+	if _, _, err := readArrayStatus(path+".missing", time.Now()); err == nil {
+		t.Fatal("missing copy should fail")
+	}
+}
+
+func TestArrayStatusRendersEachState(t *testing.T) {
+	widget := &arrayStatusWidget{File: "unused"}
+	if err := widget.initialize(); err != nil {
+		t.Fatal(err)
+	}
+	widget.ContentAvailable = true
+
+	widget.Total = 3
+	if got := string(widget.Render()); !strings.Contains(got, "All 3 disks OK") {
+		t.Fatalf("healthy render: %s", got)
+	}
+	widget.Problems = []arrayDiskProblem{{"disk1", "disabled"}}
+	if got := string(widget.Render()); !strings.Contains(got, "disk1") || !strings.Contains(got, "disabled") {
+		t.Fatalf("problem render: %s", got)
+	}
+	widget.Error = errors.New("stale")
+	if got := string(widget.Render()); !strings.Contains(got, "Could not read disk status") || strings.Contains(got, "disks OK") {
+		t.Fatalf("error render: %s", got)
 	}
 }

@@ -1,0 +1,22 @@
+{{ template "widget-base.html" . }}
+
+{{- define "widget-content" }}
+{{- if .Error }}
+<div class="text-center">Could not read disk status</div>
+{{- else if .Problems }}
+<ul class="list list-gap-10">
+    {{- range .Problems }}
+    <li class="flex justify-between items-center gap-15">
+        {{- if $.URL }}
+        <a href="{{ $.URL | safeURL }}" class="color-highlight size-h3" target="_blank" rel="noreferrer">{{ .Name }}</a>
+        {{- else }}
+        <div class="color-highlight size-h3">{{ .Name }}</div>
+        {{- end }}
+        <div class="color-negative">{{ .Status }}</div>
+    </li>
+    {{- end }}
+</ul>
+{{- else }}
+<div class="text-center">All {{ .Total }} disk{{ if ne .Total 1 }}s{{ end }} OK</div>
+{{- end }}
+{{- end }}

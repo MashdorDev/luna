@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"html/template"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -44,14 +45,18 @@ func (widget *arrayStatusWidget) update(ctx context.Context) {
 	total, problems, err := readArrayStatus(widget.File, time.Now())
 
 	widget.renderMu.Lock()
-	defer widget.renderMu.Unlock()
-
-	if !widget.canContinueUpdateAfterHandlingErr(err) {
-		return
+	changed := (err != nil) != (widget.Error != nil) ||
+		(err == nil && (total != widget.Total || !slices.Equal(problems, widget.Problems)))
+	if widget.canContinueUpdateAfterHandlingErr(err) {
+		widget.Total = total
+		widget.Problems = problems
 	}
+	widget.renderMu.Unlock()
 
-	widget.Total = total
-	widget.Problems = problems
+	if changed {
+		// page.js refetches and morphs this widget in every open tab
+		publishEvent("custom-api:data_changed", map[string]any{"widget_id": widget.GetID(), "title": widget.Title})
+	}
 }
 
 func (widget *arrayStatusWidget) Render() template.HTML {
@@ -93,7 +98,10 @@ func parseArrayStatus(content string) (int, []arrayDiskProblem) {
 		if status == "" || (empty && assignedID == "") {
 			return
 		}
-		total++
+		// The boot USB is reported like a disk but is not one to count
+		if name != "flash" {
+			total++
+		}
 		if text := arrayDiskProblemText(status, filesystem, readErrors); text != "" {
 			problems = append(problems, arrayDiskProblem{Name: name, Status: text})
 		}

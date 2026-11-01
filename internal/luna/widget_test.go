@@ -115,8 +115,8 @@ numErrors="0"
 
 func TestParseArrayStatus(t *testing.T) {
 	total, problems := parseArrayStatus(arrayStatusSample)
-	if total != 7 {
-		t.Fatalf("total = %d, want 7", total)
+	if total != 6 {
+		t.Fatalf("total = %d, want 6", total)
 	}
 	want := []arrayDiskProblem{{"disk1", "disabled"}, {"disk2", "3 errors"}, {"disk3", "missing"}, {"disk4", "unmountable"}}
 	if !slices.Equal(problems, want) {

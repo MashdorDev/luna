@@ -90,6 +90,10 @@ type cockpitWidget struct {
 		URL      string `yaml:"url"`
 		Holidays bool   `yaml:"holidays"`
 	} `yaml:"calendars"`
+	ArrayStatus struct {
+		File string `yaml:"file"`
+		URL  string `yaml:"url"`
+	} `yaml:"array-status"`
 	SearchURL string `yaml:"search-url"`
 	Zones     []struct {
 		Timezone string `yaml:"timezone"`
@@ -287,6 +291,7 @@ func (widget *cockpitWidget) update(ctx context.Context) {
 	run("GitHub", widget.GitHubToken != "", widget.fetchGitHub)
 	run("GlitchTip", widget.GlitchTip.URL != "", func() ([]cockpitRow, error) { return widget.fetchGlitchTip(now) })
 	run("Plane", widget.Plane.URL != "", func() ([]cockpitRow, error) { return widget.fetchPlane(now) })
+	run("Array", widget.ArrayStatus.File != "", func() ([]cockpitRow, error) { return widget.fetchArrayStatus(now) })
 	for i := range widget.Invoices {
 		i := i
 		run(fmt.Sprintf("Invoice Ninja %d", i+1), true, func() ([]cockpitRow, error) { return widget.fetchInvoices(i, now) })
@@ -407,6 +412,28 @@ func (widget *cockpitWidget) update(ctx context.Context) {
 
 	// page.js refetches and morphs this widget in every open tab
 	publishEvent("custom-api:data_changed", map[string]any{"widget_id": widget.GetID(), "title": widget.Title})
+}
+
+func (widget *cockpitWidget) fetchArrayStatus(now time.Time) ([]cockpitRow, error) {
+	_, problems, err := readArrayStatus(widget.ArrayStatus.File, now)
+	if err != nil {
+		return nil, err
+	}
+	if len(problems) == 0 {
+		return nil, nil
+	}
+
+	items := make([]cockpitItem, len(problems))
+	summary := make([]string, len(problems))
+	for i, problem := range problems {
+		items[i] = cockpitItem{Title: problem.Name, Tag: problem.Status, Tone: "hot", URL: widget.ArrayStatus.URL}
+		summary[i] = problem.Name + " " + problem.Status
+	}
+
+	return []cockpitRow{{
+		Kind: "down", Group: "array", Tone: "hot", Big: strconv.Itoa(len(problems)),
+		Label: pluralWord(len(problems), "disk problem", "disk problems"), Sub: strings.Join(summary, ", "), Hint: "See disks", Items: items,
+	}}, nil
 }
 
 func pluralWord(n int, one, many string) string {

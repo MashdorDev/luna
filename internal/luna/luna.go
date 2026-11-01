@@ -270,6 +270,8 @@ func newApplication(c *config) (*application, error) {
 				api.update(app.monitorCtx)
 			} else if cockpit, ok := w.(*cockpitWidget); ok {
 				cockpit.update(app.monitorCtx)
+			} else if array, ok := w.(*arrayStatusWidget); ok {
+				array.update(app.monitorCtx)
 			} else if reddit, ok := w.(*redditWidget); ok {
 				// reddit updates must go through the ticker: page loads
 				// grant only one rate-limit slot per wave, so overdue

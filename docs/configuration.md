@@ -2433,6 +2433,26 @@ Whether to hide the list of top blocked domains.
 ##### `hour-format`
 Whether to display the relative time in the graph in `12h` or `24h` format.
 
+### Array Status
+Shows Unraid disks that need attention, or "All N disks OK" when none do. Empty slots are ignored.
+
+```yaml
+- type: array-status
+  file: /app/host/disks.ini
+  url: http://10.0.0.200
+```
+
+Unraid replaces `/var/local/emhttp/disks.ini` every 20 seconds or so, so a mount of that one file goes stale, and its directory also holds credentials. Copy the file into a mounted directory from a host cron job instead. Keep the original time with `cp -p`: a file more than 10 minutes old is reported as an error.
+
+The `cockpit` widget takes the same two values under `array-status:` and adds a row to "Needs you".
+
+#### Properties
+
+| Name | Type | Required |
+| ---- | ---- | -------- |
+| file | string | yes |
+| url | string | no |
+
 ### Server Stats
 Display statistics such as CPU usage, memory usage and disk usage of the server luna is running on or other servers.
 

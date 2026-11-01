@@ -19,10 +19,12 @@ type dockerContainersWidget struct {
 	widgetBase           `yaml:",inline"`
 	HideByDefault        bool                         `yaml:"hide-by-default"`
 	RunningOnly          bool                         `yaml:"running-only"`
+	ShowFailingOnly      bool                         `yaml:"show-failing-only"`
 	Category             string                       `yaml:"category"`
 	SockPath             string                       `yaml:"sock-path"`
 	FormatContainerNames bool                         `yaml:"format-container-names"`
 	Containers           dockerContainerList          `yaml:"-"`
+	Total                int                          `yaml:"-"`
 	LabelOverrides       map[string]map[string]string `yaml:"containers"`
 }
 
@@ -41,16 +43,26 @@ func (widget *dockerContainersWidget) update(ctx context.Context) {
 		widget.SockPath,
 		widget.HideByDefault,
 		widget.Category,
-		widget.RunningOnly,
+		widget.RunningOnly && !widget.ShowFailingOnly,
 		widget.FormatContainerNames,
 		widget.LabelOverrides,
 	)
+
+	widget.renderMu.Lock()
+	defer widget.renderMu.Unlock()
+
 	if !widget.canContinueUpdateAfterHandlingErr(err) {
 		return
 	}
 
 	containers.sortByStateIconThenTitle()
+	total := containers.count()
+	if widget.ShowFailingOnly {
+		containers = containers.failing()
+	}
+
 	widget.Containers = containers
+	widget.Total = total
 }
 
 func (widget *dockerContainersWidget) Render() template.HTML {
@@ -125,6 +137,27 @@ type dockerContainer struct {
 
 type dockerContainerList []dockerContainer
 
+func (containers dockerContainerList) failing() dockerContainerList {
+	failing := make(dockerContainerList, 0)
+	for _, container := range containers {
+		if len(container.Children.failing()) > 0 {
+			container.StateIcon = dockerContainerStateIconWarn
+		}
+		if container.StateIcon != dockerContainerStateIconOK {
+			failing = append(failing, container)
+		}
+	}
+	return failing
+}
+
+func (containers dockerContainerList) count() int {
+	total := len(containers)
+	for _, container := range containers {
+		total += len(container.Children)
+	}
+	return total
+}
+
 func (containers dockerContainerList) sortByStateIconThenTitle() {
 	p := &dockerContainerStateIconPriorities
 
@@ -137,9 +170,13 @@ func (containers dockerContainerList) sortByStateIconThenTitle() {
 	})
 }
 
-func dockerContainerStateToStateIcon(state string) string {
+func dockerContainerStateToStateIcon(state, status string) string {
 	switch state {
 	case "running":
+		// Docker keeps the state as running and only reports health in the status text
+		if strings.Contains(strings.ToLower(status), "(unhealthy)") {
+			return dockerContainerStateIconWarn
+		}
 		return dockerContainerStateIconOK
 	case "paused":
 		return dockerContainerStateIconPaused
@@ -187,7 +224,7 @@ func fetchDockerContainers(
 					dc.Children = append(dc.Children, dockerContainer{
 						Name:      deriveDockerContainerName(child, formatNames),
 						StateText: child.Status,
-						StateIcon: dockerContainerStateToStateIcon(strings.ToLower(child.State)),
+						StateIcon: dockerContainerStateToStateIcon(strings.ToLower(child.State), child.Status),
 					})
 				}
 			}
@@ -204,7 +241,7 @@ func fetchDockerContainers(
 			}
 		}
 		if !stateIconSupersededByChild {
-			dc.StateIcon = dockerContainerStateToStateIcon(dc.State)
+			dc.StateIcon = dockerContainerStateToStateIcon(dc.State, dc.StateText)
 		}
 
 		dockerContainers = append(dockerContainers, dc)

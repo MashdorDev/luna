@@ -2288,6 +2288,7 @@ If any of the child containers are down, their status will propagate up to the p
 | sock-path | string | no | /var/run/docker.sock |
 | category | string | no | |
 | running-only | boolean | no | false |
+| show-failing-only | boolean | no | false |
 
 ##### `hide-by-default`
 Whether to hide the containers by default. If set to `true` you'll have to manually add a `luna.hide: false` label to each container you want to display. By default all containers will be shown and if you want to hide a specific container you can add a `luna.hide: true` label.
@@ -2349,6 +2350,9 @@ Then you can use the `category` property to filter the containers:
 
 ##### `running-only`
 Whether to only show running containers. If set to `true` only containers that are currently running will be displayed. If set to `false` all containers will be displayed regardless of their state.
+
+##### `show-failing-only`
+Shows only containers that need attention, or a line saying all of them are running. Unhealthy, exited, dead, restarting, paused and created containers count as failing, including one grouped under a healthy parent. A one-shot container that finished with `Exited (0)` also counts, so hide it with the `luna.hide` label. This option ignores `running-only`, since stopped containers have to be read to be reported.
 
 #### Labels
 | Name | Description |

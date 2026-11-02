@@ -152,7 +152,7 @@ func fetchContainerCleanExits(client *http.Client, hostname, id string, since ti
 	defer cancel()
 
 	query := url.Values{
-		"since":   {strconv.FormatInt(since.Unix(), 10)},
+		"since": {strconv.FormatInt(since.Unix(), 10)},
 		// One second ahead, since until is exclusive of anything later in the current second
 		"until":   {strconv.FormatInt(time.Now().Unix()+1, 10)},
 		"filters": {fmt.Sprintf(`{"container":[%q],"event":["die"]}`, id)},

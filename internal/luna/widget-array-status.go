@@ -19,7 +19,7 @@ var arrayStatusWidgetTemplate = mustParseTemplate("array-status.html", "widget-b
 // file means Unraid or the copy job stopped
 const arrayStatusMaxAge = 10 * time.Minute
 
-// The SMART copy job runs hourly, so this allows two missed runs
+// The SMART job runs hourly, so this allows two missed runs
 const arraySmartMaxAge = 3 * time.Hour
 
 // A cable error or two can sit in the count for years, so only a run of them says anything
@@ -97,7 +97,8 @@ func readArrayStatus(path string, now time.Time) (int, []arrayDiskProblem, error
 
 // readArraySmartProblems checks one smartctl output file per disk. Without the directory there is
 // nothing set up to check. With it, having no recent file is itself a problem, since disks would
-// otherwise look healthy after the copy job stops
+// otherwise look healthy after the job stops. An old report still counts: a sleeping disk keeps
+// its last one, and its bad sectors have not gone away
 func readArraySmartProblems(dir string, now time.Time) []arrayDiskProblem {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -112,21 +113,23 @@ func readArraySmartProblems(dir string, now time.Time) []arrayDiskProblem {
 			continue
 		}
 		info, err := entry.Info()
-		if err != nil || now.Sub(info.ModTime()) > arraySmartMaxAge {
+		if err != nil {
 			continue
 		}
 		content, err := os.ReadFile(filepath.Join(dir, entry.Name()))
 		if err != nil {
 			continue
 		}
-		recent++
+		if now.Sub(info.ModTime()) <= arraySmartMaxAge {
+			recent++
+		}
 		if text := parseArraySmart(string(content)); text != "" {
 			problems = append(problems, arrayDiskProblem{Name: name, Status: text})
 		}
 	}
 
 	if recent == 0 {
-		return []arrayDiskProblem{{Name: "SMART", Status: "no recent data"}}
+		problems = append(problems, arrayDiskProblem{Name: "SMART", Status: "no recent data"})
 	}
 
 	return problems
@@ -134,7 +137,8 @@ func readArraySmartProblems(dir string, now time.Time) []arrayDiskProblem {
 
 func parseArraySmart(content string) string {
 	found := make([]string, 0)
-	var sectors = map[string]string{
+	seen := make(map[string]bool)
+	sectors := map[string]string{
 		"5":   "reallocated",
 		"187": "uncorrectable",
 		"197": "pending",
@@ -153,9 +157,11 @@ func parseArraySmart(content string) string {
 			continue
 		}
 		raw, err := strconv.Atoi(fields[9])
-		if err != nil {
+		// smartctl can list a failing attribute again in a second table
+		if err != nil || seen[fields[0]] {
 			continue
 		}
+		seen[fields[0]] = true
 
 		if kind, ok := sectors[fields[0]]; ok && raw > 0 {
 			found = append(found, strconv.Itoa(raw)+" "+kind+" "+pluralWord(raw, "sector", "sectors"))

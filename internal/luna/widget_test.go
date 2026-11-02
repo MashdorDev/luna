@@ -166,6 +166,7 @@ func TestParseArraySmart(t *testing.T) {
 194 Temperature_Celsius     0x0022   108   100   000    Old_age   Always       -       58 (Min/Max 20/60)
 197 Current_Pending_Sector  0x0032   200   200   000    Old_age   Always       -       1
 199 UDMA_CRC_Error_Count    0x0032   200   200   000    Old_age   Always       -       10
+  5 Reallocated_Sector_Ct   0x0033   100   100   140    Pre-fail  Always   FAILING_NOW 12
 `
 	want := "SMART failed, 12 reallocated sectors, 58°C, 1 pending sector, 10 cable errors"
 	if got := parseArraySmart(failing); got != want {
@@ -195,8 +196,9 @@ func TestReadArraySmartProblems(t *testing.T) {
 	if got := readArraySmartProblems(dir, now); !slices.Equal(got, want) {
 		t.Fatalf("got %+v", got)
 	}
-	if got := readArraySmartProblems(dir, now.Add(arraySmartMaxAge+time.Minute)); !slices.Equal(got, stale) {
-		t.Fatalf("old files: %+v", got)
+	oldWant := append(want, stale...)
+	if got := readArraySmartProblems(dir, now.Add(arraySmartMaxAge+time.Minute)); !slices.Equal(got, oldWant) {
+		t.Fatalf("old files keep their warning: %+v", got)
 	}
 }
 

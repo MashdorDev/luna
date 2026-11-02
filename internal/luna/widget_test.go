@@ -160,7 +160,7 @@ ID# ATTRIBUTE_NAME          FLAG     VALUE WORST THRESH TYPE      UPDATED  WHEN_
 `
 
 func TestContainerRestartTrackerExpires(t *testing.T) {
-	tracker := &containerRestartTracker{counts: map[string]int{}, recent: map[string]*containerRestart{}}
+	tracker := newContainerRestartTracker()
 	names := map[string]string{"a": "pocket-id"}
 	now := time.Now()
 
@@ -179,7 +179,6 @@ func TestContainerRestartTrackerExpires(t *testing.T) {
 
 func TestContainerRestartsReadFromDocker(t *testing.T) {
 	count := 2
-	events := ""
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/containers/json":
@@ -189,35 +188,60 @@ func TestContainerRestartsReadFromDocker(t *testing.T) {
 		case "/containers/gone/json":
 			w.WriteHeader(http.StatusNotFound)
 		case "/events":
-			fmt.Fprint(w, events)
+			// The stream the tracker opens itself ends here; the test feeds its exits directly
 		default:
 			t.Errorf("unexpected request: %s", r.URL.Path)
 		}
 	}))
 	defer server.Close()
 
-	tracker := &containerRestartTracker{counts: map[string]int{}, recent: map[string]*containerRestart{}}
-	if _, err := tracker.update(server.URL, time.Now()); err != nil {
-		t.Fatal(err)
+	tracker := newContainerRestartTracker()
+	clean := func(n int) {
+		tracker.exitsMu.Lock()
+		tracker.cleanExits["a"] += n
+		tracker.exitsMu.Unlock()
 	}
+
 	// An old count on first sight is not news, and a worker that exits 0 on purpose is not a crash
+	if got, err := tracker.update(server.URL, time.Now()); err != nil || len(got) != 0 {
+		t.Fatalf("first check: %+v, %v", got, err)
+	}
 	count = 3
-	events = `{"Actor":{"Attributes":{"exitCode":"0"}}}`
+	clean(1)
 	if got, err := tracker.update(server.URL, time.Now()); err != nil || len(got) != 0 {
 		t.Fatalf("clean exit: %+v, %v", got, err)
 	}
+	// Two restarts and one clean exit: one crash
 	count = 5
-	events = `{"Actor":{"Attributes":{"exitCode":"1"}}}` + "\n" + `{"Actor":{"Attributes":{"exitCode":"0"}}}`
+	clean(1)
 	got, err := tracker.update(server.URL, time.Now())
 	if err != nil || len(got) != 1 || got[0].Name != "pocket-id" || got[0].Count != 1 {
 		t.Fatalf("got %+v, %v", got, err)
 	}
-	// Docker keeps few events, so a rise it cannot explain counts as a crash
+	// A rise nothing explains counts as a crash
 	count = 6
-	events = ""
 	got, err = tracker.update(server.URL, time.Now())
 	if err != nil || len(got) != 1 || got[0].Count != 2 {
-		t.Fatalf("no events left: %+v, %v", got, err)
+		t.Fatalf("unexplained: %+v, %v", got, err)
+	}
+}
+
+func TestContainerRestartsReadExitStream(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"Actor":{"ID":"a","Attributes":{"exitCode":"0"}}}`+"\n"+`{"Actor":{"ID":"a","Attributes":{"exitCode":"137"}}}`+"\n"+`{"Actor":{"ID":"b","Attributes":{"exitCode":"0"}}}`)
+	}))
+	defer server.Close()
+
+	tracker := newContainerRestartTracker()
+	client, hostname, err := newDockerClient(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tracker.readExits(client, hostname); err == nil {
+		t.Fatal("a closed stream should report it")
+	}
+	if tracker.cleanExits["a"] != 1 || tracker.cleanExits["b"] != 1 {
+		t.Fatalf("got %+v", tracker.cleanExits)
 	}
 }
 

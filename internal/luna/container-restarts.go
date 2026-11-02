@@ -4,17 +4,17 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
 )
 
 const containerRestartWindow = 24 * time.Hour
+const containerExitStreamRetry = 5 * time.Second
 
 type containerRestart struct {
 	Name  string
@@ -24,21 +24,29 @@ type containerRestart struct {
 
 // containerRestartTracker notices Docker's RestartCount going up between checks. Only a restart
 // policy raises that count, so a deploy, reboot or docker restart does not show here. A worker that
-// exits 0 on purpose does raise it, as Solidtime's queue does every hour, so clean exits in Docker's
-// events are taken off the rise. Docker keeps few events, so a rise with no event left to explain it
-// counts as a crash. A recreated container has a new ID and starts at its first count without a
-// warning.
+// exits 0 on purpose does raise it, as Solidtime's queue does every hour, so clean exits are taken
+// off the rise. They come from a live event stream, because Docker's event history is too short to
+// read afterwards on a server with many health checks. A rise with no clean exit to explain it,
+// such as during a dropped stream, counts as a crash. A recreated container has a new ID and starts
+// at its first count without a warning.
 type containerRestartTracker struct {
-	// Held across the fetch too: an older snapshot recorded over a newer one counts a restart twice
-	mu        sync.Mutex
-	counts    map[string]int
-	recent    map[string]*containerRestart
-	inspected map[string]time.Time
+	mu     sync.Mutex
+	counts map[string]int
+	recent map[string]*containerRestart
+
+	watch      sync.Once
+	exitsMu    sync.Mutex
+	cleanExits map[string]int
 }
 
-var containerRestarts = &containerRestartTracker{
-	counts: make(map[string]int),
-	recent: make(map[string]*containerRestart),
+var containerRestarts = newContainerRestartTracker()
+
+func newContainerRestartTracker() *containerRestartTracker {
+	return &containerRestartTracker{
+		counts:     make(map[string]int),
+		recent:     make(map[string]*containerRestart),
+		cleanExits: make(map[string]int),
+	}
 }
 
 func (tracker *containerRestartTracker) record(counts, crashes map[string]int, names map[string]string, now time.Time) []containerRestart {
@@ -75,27 +83,25 @@ func (tracker *containerRestartTracker) update(source string, now time.Time) ([]
 	tracker.mu.Lock()
 	defer tracker.mu.Unlock()
 
-	containers, err := fetchDockerContainersFromSource(source, "", false, nil)
+	client, hostname, err := newDockerClient(source)
 	if err != nil {
 		return nil, err
 	}
-	client, hostname, err := newDockerClient(source)
+	tracker.watch.Do(func() { go tracker.watchExits(client, hostname) })
+
+	containers, err := fetchDockerContainersFromSource(source, "", false, nil)
 	if err != nil {
 		return nil, err
 	}
 
 	counts := make(map[string]int, len(containers))
 	crashes := make(map[string]int)
-	inspected := make(map[string]time.Time, len(containers))
 	names := make(map[string]string, len(containers))
 	for i := range containers {
 		container := &containers[i]
 		if isDockerContainerHidden(container, false) {
 			continue
 		}
-		// Each container's own time: a check takes seconds, and an exit after this inspect but before
-		// the check ends belongs to the next window
-		inspected[container.ID] = time.Now()
 		count, exists, err := fetchContainerRestartCount(client, hostname, container.ID)
 		if err != nil {
 			return nil, err
@@ -108,15 +114,11 @@ func (tracker *containerRestartTracker) update(source string, now time.Time) ([]
 		names[container.ID] = strings.TrimLeft(itemAtIndexOrDefault(container.Names, 0, container.ID), "/")
 
 		if previous, known := tracker.counts[container.ID]; known && count > previous {
-			cleanExits, err := fetchContainerCleanExits(client, hostname, container.ID, tracker.inspected[container.ID])
-			if err != nil {
-				return nil, err
-			}
-			crashes[container.ID] = max(count-previous-cleanExits, 0)
+			crashes[container.ID] = tracker.takeCleanExits(container.ID, count-previous)
 		}
 	}
 
-	tracker.inspected = inspected
+	tracker.forgetExits(counts)
 	return tracker.record(counts, crashes, names, now), nil
 }
 
@@ -151,47 +153,65 @@ func fetchContainerRestartCount(client *http.Client, hostname, id string) (int, 
 	return details.RestartCount, true, nil
 }
 
-func fetchContainerCleanExits(client *http.Client, hostname, id string, since time.Time) (int, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+// takeCleanExits returns how many of a container's restarts its clean exits do not explain
+func (tracker *containerRestartTracker) takeCleanExits(id string, restarts int) int {
+	tracker.exitsMu.Lock()
+	defer tracker.exitsMu.Unlock()
 
-	query := url.Values{
-		"since": {strconv.FormatInt(since.Unix(), 10)},
-		// One second ahead, since until is exclusive of anything later in the current second
-		"until":   {strconv.FormatInt(time.Now().Unix()+1, 10)},
-		"filters": {fmt.Sprintf(`{"container":[%q],"event":["die"]}`, id)},
+	explained := min(tracker.cleanExits[id], restarts)
+	tracker.cleanExits[id] -= explained
+	return restarts - explained
+}
+
+func (tracker *containerRestartTracker) forgetExits(live map[string]int) {
+	tracker.exitsMu.Lock()
+	defer tracker.exitsMu.Unlock()
+
+	for id := range tracker.cleanExits {
+		if _, ok := live[id]; !ok {
+			delete(tracker.cleanExits, id)
+		}
 	}
-	request, err := http.NewRequestWithContext(ctx, "GET", "http://"+hostname+"/events?"+query.Encode(), nil)
-	if err != nil {
-		return 0, fmt.Errorf("creating request: %w", err)
+}
+
+func (tracker *containerRestartTracker) watchExits(client *http.Client, hostname string) {
+	for {
+		if err := tracker.readExits(client, hostname); err != nil {
+			slog.Error("Docker event stream dropped", "error", err)
+		}
+		time.Sleep(containerExitStreamRetry)
 	}
-	response, err := client.Do(request)
+}
+
+func (tracker *containerRestartTracker) readExits(client *http.Client, hostname string) error {
+	query := url.Values{"filters": {`{"type":["container"],"event":["die"]}`}}
+	response, err := client.Get("http://" + hostname + "/events?" + query.Encode())
 	if err != nil {
-		return 0, fmt.Errorf("sending request to socket: %w", err)
+		return fmt.Errorf("sending request to socket: %w", err)
 	}
 	defer response.Body.Close()
 
 	if response.StatusCode != http.StatusOK {
-		return 0, fmt.Errorf("non-200 response status: %s", response.Status)
+		return fmt.Errorf("non-200 response status: %s", response.Status)
 	}
 
-	cleanExits := 0
 	decoder := json.NewDecoder(response.Body)
 	for {
 		var event struct {
 			Actor struct {
+				ID         string `json:"ID"`
 				Attributes struct {
 					ExitCode string `json:"exitCode"`
 				} `json:"Attributes"`
 			} `json:"Actor"`
 		}
-		if err := decoder.Decode(&event); err == io.EOF {
-			return cleanExits, nil
-		} else if err != nil {
-			return 0, fmt.Errorf("decoding events: %w", err)
+		if err := decoder.Decode(&event); err != nil {
+			return fmt.Errorf("decoding events: %w", err)
 		}
 		if event.Actor.Attributes.ExitCode == "0" {
-			cleanExits++
+			tracker.exitsMu.Lock()
+			tracker.cleanExits[event.Actor.ID]++
+			tracker.exitsMu.Unlock()
 		}
 	}
 }

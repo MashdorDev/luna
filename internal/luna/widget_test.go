@@ -159,26 +159,20 @@ ID# ATTRIBUTE_NAME          FLAG     VALUE WORST THRESH TYPE      UPDATED  WHEN_
 199 UDMA_CRC_Error_Count    0x0032   200   200   000    Old_age   Always       -       1
 `
 
-func TestContainerRestartTrackerCountsOnlyNewRestarts(t *testing.T) {
-	tracker := &containerRestartTracker{counts: map[string]int{}, recent: map[string]*containerRestart{}}
-	names := map[string]string{"a": "pocket-id", "b": "luna"}
+func TestContainerRestartTrackerExpires(t *testing.T) {
+	tracker := newContainerRestartTracker()
+	names := map[string]string{"a": "pocket-id"}
 	now := time.Now()
 
-	// An old count on first sight is not news
-	if got := tracker.record(map[string]int{"a": 5, "b": 0}, names, now); len(got) != 0 {
-		t.Fatalf("first check: %+v", got)
-	}
-	got := tracker.record(map[string]int{"a": 8, "b": 0}, names, now.Add(time.Minute))
+	got := tracker.record(map[string]int{"a": 8}, map[string]int{"a": 3}, names, now)
 	if len(got) != 1 || got[0].Name != "pocket-id" || got[0].Count != 3 {
-		t.Fatalf("restarted: %+v", got)
+		t.Fatalf("crashed: %+v", got)
 	}
-	// A recreated container has a new ID, so its count starts over without a warning
-	names["c"] = "luna"
-	got = tracker.record(map[string]int{"a": 9, "c": 0}, names, now.Add(2*time.Minute))
+	got = tracker.record(map[string]int{"a": 9}, map[string]int{"a": 1}, names, now.Add(time.Minute))
 	if len(got) != 1 || got[0].Count != 4 {
-		t.Fatalf("second restart: %+v", got)
+		t.Fatalf("crashed again: %+v", got)
 	}
-	if got := tracker.record(map[string]int{"a": 9, "c": 0}, names, now.Add(containerRestartWindow+3*time.Minute)); len(got) != 0 {
+	if got := tracker.record(map[string]int{"a": 9}, nil, names, now.Add(containerRestartWindow+2*time.Minute)); len(got) != 0 {
 		t.Fatalf("after the window: %+v", got)
 	}
 }
@@ -193,20 +187,64 @@ func TestContainerRestartsReadFromDocker(t *testing.T) {
 			fmt.Fprintf(w, `{"RestartCount":%d}`, count)
 		case "/containers/gone/json":
 			w.WriteHeader(http.StatusNotFound)
+		case "/events":
+			// The stream the tracker opens itself ends here; the test feeds its exits directly
 		default:
 			t.Errorf("unexpected request: %s", r.URL.Path)
 		}
 	}))
 	defer server.Close()
 
-	tracker := &containerRestartTracker{counts: map[string]int{}, recent: map[string]*containerRestart{}}
-	if _, err := tracker.update(server.URL, time.Now()); err != nil {
-		t.Fatal(err)
+	tracker := newContainerRestartTracker()
+	clean := func(n int, at time.Time) {
+		tracker.exitsMu.Lock()
+		for range n {
+			tracker.cleanExits["a"] = append(tracker.cleanExits["a"], at)
+		}
+		tracker.exitsMu.Unlock()
+	}
+
+	// An old count on first sight is not news, and a worker that exits 0 on purpose is not a crash
+	if got, err := tracker.update(server.URL, time.Now()); err != nil || len(got) != 0 {
+		t.Fatalf("first check: %+v, %v", got, err)
 	}
 	count = 3
+	clean(1, time.Now())
+	if got, err := tracker.update(server.URL, time.Now()); err != nil || len(got) != 0 {
+		t.Fatalf("clean exit: %+v, %v", got, err)
+	}
+	// Two restarts and one clean exit: one crash
+	count = 5
+	clean(1, time.Now())
 	got, err := tracker.update(server.URL, time.Now())
 	if err != nil || len(got) != 1 || got[0].Name != "pocket-id" || got[0].Count != 1 {
 		t.Fatalf("got %+v, %v", got, err)
+	}
+	// An old clean exit, as from a docker stop days ago, does not explain a new rise
+	count = 6
+	clean(1, time.Now().Add(-containerCleanExitMaxAge-time.Minute))
+	got, err = tracker.update(server.URL, time.Now())
+	if err != nil || len(got) != 1 || got[0].Count != 2 {
+		t.Fatalf("unexplained: %+v, %v", got, err)
+	}
+}
+
+func TestContainerRestartsReadExitStream(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"Actor":{"ID":"a","Attributes":{"exitCode":"0"}}}`+"\n"+`{"Actor":{"ID":"a","Attributes":{"exitCode":"137"}}}`+"\n"+`{"Actor":{"ID":"b","Attributes":{"exitCode":"0"}}}`)
+	}))
+	defer server.Close()
+
+	tracker := newContainerRestartTracker()
+	client, hostname, err := newDockerClient(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tracker.readExits(client, hostname); err == nil {
+		t.Fatal("a closed stream should report it")
+	}
+	if len(tracker.cleanExits["a"]) != 1 || len(tracker.cleanExits["b"]) != 1 {
+		t.Fatalf("got %+v", tracker.cleanExits)
 	}
 }
 

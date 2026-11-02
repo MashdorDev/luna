@@ -272,6 +272,9 @@ func newApplication(c *config) (*application, error) {
 				cockpit.update(app.monitorCtx)
 			} else if array, ok := w.(*arrayStatusWidget); ok {
 				array.update(app.monitorCtx)
+			} else if docker, ok := w.(*dockerContainersWidget); ok && docker.ShowFailingOnly {
+				// Docker keeps few events, so restart checks cannot wait for a page view
+				docker.update(app.monitorCtx)
 			} else if reddit, ok := w.(*redditWidget); ok {
 				// reddit updates must go through the ticker: page loads
 				// grant only one rate-limit slot per wave, so overdue

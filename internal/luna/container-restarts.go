@@ -30,10 +30,10 @@ type containerRestart struct {
 // warning.
 type containerRestartTracker struct {
 	// Held across the fetch too: an older snapshot recorded over a newer one counts a restart twice
-	mu      sync.Mutex
-	counts  map[string]int
-	recent  map[string]*containerRestart
-	checked time.Time
+	mu        sync.Mutex
+	counts    map[string]int
+	recent    map[string]*containerRestart
+	inspected map[string]time.Time
 }
 
 var containerRestarts = &containerRestartTracker{
@@ -86,12 +86,16 @@ func (tracker *containerRestartTracker) update(source string, now time.Time) ([]
 
 	counts := make(map[string]int, len(containers))
 	crashes := make(map[string]int)
+	inspected := make(map[string]time.Time, len(containers))
 	names := make(map[string]string, len(containers))
 	for i := range containers {
 		container := &containers[i]
 		if isDockerContainerHidden(container, false) {
 			continue
 		}
+		// Each container's own time: a check takes seconds, and an exit after this inspect but before
+		// the check ends belongs to the next window
+		inspected[container.ID] = time.Now()
 		count, exists, err := fetchContainerRestartCount(client, hostname, container.ID)
 		if err != nil {
 			return nil, err
@@ -104,7 +108,7 @@ func (tracker *containerRestartTracker) update(source string, now time.Time) ([]
 		names[container.ID] = strings.TrimLeft(itemAtIndexOrDefault(container.Names, 0, container.ID), "/")
 
 		if previous, known := tracker.counts[container.ID]; known && count > previous {
-			cleanExits, err := fetchContainerCleanExits(client, hostname, container.ID, tracker.checked)
+			cleanExits, err := fetchContainerCleanExits(client, hostname, container.ID, tracker.inspected[container.ID])
 			if err != nil {
 				return nil, err
 			}
@@ -112,7 +116,7 @@ func (tracker *containerRestartTracker) update(source string, now time.Time) ([]
 		}
 	}
 
-	tracker.checked = time.Now()
+	tracker.inspected = inspected
 	return tracker.record(counts, crashes, names, now), nil
 }
 

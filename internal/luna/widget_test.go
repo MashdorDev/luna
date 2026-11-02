@@ -212,6 +212,13 @@ func TestContainerRestartsReadFromDocker(t *testing.T) {
 	if err != nil || len(got) != 1 || got[0].Name != "pocket-id" || got[0].Count != 1 {
 		t.Fatalf("got %+v, %v", got, err)
 	}
+	// Docker keeps few events, so a rise it cannot explain counts as a crash
+	count = 6
+	events = ""
+	got, err = tracker.update(server.URL, time.Now())
+	if err != nil || len(got) != 1 || got[0].Count != 2 {
+		t.Fatalf("no events left: %+v, %v", got, err)
+	}
 }
 
 func TestParseArraySmart(t *testing.T) {

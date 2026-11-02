@@ -24,9 +24,10 @@ type containerRestart struct {
 
 // containerRestartTracker notices Docker's RestartCount going up between checks. Only a restart
 // policy raises that count, so a deploy, reboot or docker restart does not show here. A worker that
-// exits 0 on purpose does raise it, as Solidtime's queue does every hour, so the exit codes in
-// Docker's events decide what counts as a crash. A recreated container has a new ID and starts at
-// its first count without a warning.
+// exits 0 on purpose does raise it, as Solidtime's queue does every hour, so clean exits in Docker's
+// events are taken off the rise. Docker keeps few events, so a rise with no event left to explain it
+// counts as a crash. A recreated container has a new ID and starts at its first count without a
+// warning.
 type containerRestartTracker struct {
 	// Held across the fetch too: an older snapshot recorded over a newer one counts a restart twice
 	mu      sync.Mutex
@@ -103,14 +104,15 @@ func (tracker *containerRestartTracker) update(source string, now time.Time) ([]
 		names[container.ID] = strings.TrimLeft(itemAtIndexOrDefault(container.Names, 0, container.ID), "/")
 
 		if previous, known := tracker.counts[container.ID]; known && count > previous {
-			crashes[container.ID], err = fetchContainerCrashCount(client, hostname, container.ID, tracker.checked)
+			cleanExits, err := fetchContainerCleanExits(client, hostname, container.ID, tracker.checked)
 			if err != nil {
 				return nil, err
 			}
+			crashes[container.ID] = max(count-previous-cleanExits, 0)
 		}
 	}
 
-	tracker.checked = now
+	tracker.checked = time.Now()
 	return tracker.record(counts, crashes, names, now), nil
 }
 
@@ -145,15 +147,14 @@ func fetchContainerRestartCount(client *http.Client, hostname, id string) (int, 
 	return details.RestartCount, true, nil
 }
 
-// The window ends now, not when the check began: a crash during the check has raised the count
-// already, and would never be seen again.
-func fetchContainerCrashCount(client *http.Client, hostname, id string, since time.Time) (int, error) {
+func fetchContainerCleanExits(client *http.Client, hostname, id string, since time.Time) (int, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	query := url.Values{
 		"since":   {strconv.FormatInt(since.Unix(), 10)},
-		"until":   {strconv.FormatInt(time.Now().Unix(), 10)},
+		// One second ahead, since until is exclusive of anything later in the current second
+		"until":   {strconv.FormatInt(time.Now().Unix()+1, 10)},
 		"filters": {fmt.Sprintf(`{"container":[%q],"event":["die"]}`, id)},
 	}
 	request, err := http.NewRequestWithContext(ctx, "GET", "http://"+hostname+"/events?"+query.Encode(), nil)
@@ -170,7 +171,7 @@ func fetchContainerCrashCount(client *http.Client, hostname, id string, since ti
 		return 0, fmt.Errorf("non-200 response status: %s", response.Status)
 	}
 
-	crashes := 0
+	cleanExits := 0
 	decoder := json.NewDecoder(response.Body)
 	for {
 		var event struct {
@@ -181,12 +182,12 @@ func fetchContainerCrashCount(client *http.Client, hostname, id string, since ti
 			} `json:"Actor"`
 		}
 		if err := decoder.Decode(&event); err == io.EOF {
-			return crashes, nil
+			return cleanExits, nil
 		} else if err != nil {
 			return 0, fmt.Errorf("decoding events: %w", err)
 		}
-		if event.Actor.Attributes.ExitCode != "0" {
-			crashes++
+		if event.Actor.Attributes.ExitCode == "0" {
+			cleanExits++
 		}
 	}
 }

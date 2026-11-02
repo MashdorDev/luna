@@ -135,12 +135,27 @@ type systemThemeJS struct {
 	Light      bool   `json:"light"`
 }
 
-// JS is what the page script needs to swap between the two without a request
-func (s *systemThemes) JS() map[string]systemThemeJS {
+type clientThemes struct {
+	All   map[string]systemThemeJS `json:"all"`
+	Light string                   `json:"light"`
+	Dark  string                   `json:"dark"`
+}
+
+// ClientThemes lets the page pick its theme from the cookie in the browser, so a
+// page shell cached under another cookie (proxy or service worker) still renders
+// the right theme
+func (c *config) ClientThemes() clientThemes {
 	js := func(t *themeProperties) systemThemeJS {
 		return systemThemeJS{Key: t.Key, CSS: string(t.CSS), Background: t.BackgroundColorAsHex, Light: t.Light}
 	}
-	return map[string]systemThemeJS{"light": js(s.Light), "dark": js(s.Dark)}
+	ct := clientThemes{All: map[string]systemThemeJS{"default": js(&c.Theme.themeProperties)}}
+	for key, t := range c.Theme.Presets.Items() {
+		ct.All[key] = js(t)
+	}
+	if c.Theme.System != nil {
+		ct.Light, ct.Dark = c.Theme.System.Light.Key, c.Theme.System.Dark.Key
+	}
+	return ct
 }
 
 func (c *config) initSystemTheme() error {

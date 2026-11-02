@@ -757,7 +757,7 @@ async function changeTheme(key, onChanged) {
 
     if (key == "system") {
         pageData.theme = key;
-        applySystemTheme();
+        applyTheme();
     } else {
         themeStyleElem.html(newThemeStyle);
         document.documentElement.setAttribute("data-theme", key);
@@ -792,6 +792,10 @@ function initThemePicker() {
 
         if (themeKey == pageData.theme) {
             presetElement.classList.add("current");
+            // the server-rendered preview may come from a shell cached under another cookie
+            Array.from(themePreviewElems).forEach((preview) => {
+                preview.querySelector(".theme-preset").replaceWith(presetElement.cloneNode(true));
+            });
         }
 
         presetElement.addEventListener("click", () => {

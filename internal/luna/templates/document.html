@@ -24,22 +24,29 @@
     <link rel="icon" type="{{ .App.Config.Branding.FaviconType }}" href="{{ .App.Config.Branding.FaviconURL }}" />
     <link rel="stylesheet" href='{{ .App.StaticAssetPath "css/bundle.css" }}'>
     <style id="theme-style">{{ .Request.Theme.CSS }}</style>
-    {{ if .App.Config.Theme.System }}
+    {{ if not .App.Config.Theme.DisablePicker }}
     <script>
-    // "System" theme: follow the OS appearance, and keep following it while the page is open
+    // The theme comes from the cookie here rather than from the server, since this
+    // shell may be cached from a request with another cookie. No cookie means
+    // "System": follow the OS appearance, and keep following it while the page is open.
     (function () {
-        const themes = {{ .App.Config.Theme.System.JS }};
+        const themes = {{ .App.Config.ClientThemes }};
         const query = matchMedia("(prefers-color-scheme: light)");
-        window.applySystemTheme = function () {
-            if (pageData.theme != "system") return;
-            const t = query.matches ? themes.light : themes.dark;
+        const cookie = document.cookie.match(/(?:^|; )theme=([^;]*)/);
+        const picked = cookie && decodeURIComponent(cookie[1]);
+        pageData.theme = themes.all[picked] ? picked : (themes.light ? "system" : "default");
+        window.applyTheme = function () {
+            let key = pageData.theme;
+            if (key == "system") key = query.matches ? themes.light : themes.dark;
+            const t = themes.all[key];
+            if (!t) return;
             document.getElementById("theme-style").textContent = t.css;
             document.documentElement.setAttribute("data-theme", t.key);
             document.documentElement.setAttribute("data-scheme", t.light ? "light" : "dark");
             document.querySelector('meta[name="theme-color"]').setAttribute("content", t.background);
         };
-        applySystemTheme();
-        query.addEventListener("change", applySystemTheme);
+        applyTheme();
+        query.addEventListener("change", function () { if (pageData.theme == "system") applyTheme(); });
     })();
     </script>
     {{ end }}

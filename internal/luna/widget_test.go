@@ -159,32 +159,27 @@ ID# ATTRIBUTE_NAME          FLAG     VALUE WORST THRESH TYPE      UPDATED  WHEN_
 199 UDMA_CRC_Error_Count    0x0032   200   200   000    Old_age   Always       -       1
 `
 
-func TestContainerRestartTrackerCountsOnlyNewRestarts(t *testing.T) {
+func TestContainerRestartTrackerExpires(t *testing.T) {
 	tracker := &containerRestartTracker{counts: map[string]int{}, recent: map[string]*containerRestart{}}
-	names := map[string]string{"a": "pocket-id", "b": "luna"}
+	names := map[string]string{"a": "pocket-id"}
 	now := time.Now()
 
-	// An old count on first sight is not news
-	if got := tracker.record(map[string]int{"a": 5, "b": 0}, names, now); len(got) != 0 {
-		t.Fatalf("first check: %+v", got)
-	}
-	got := tracker.record(map[string]int{"a": 8, "b": 0}, names, now.Add(time.Minute))
+	got := tracker.record(map[string]int{"a": 8}, map[string]int{"a": 3}, names, now)
 	if len(got) != 1 || got[0].Name != "pocket-id" || got[0].Count != 3 {
-		t.Fatalf("restarted: %+v", got)
+		t.Fatalf("crashed: %+v", got)
 	}
-	// A recreated container has a new ID, so its count starts over without a warning
-	names["c"] = "luna"
-	got = tracker.record(map[string]int{"a": 9, "c": 0}, names, now.Add(2*time.Minute))
+	got = tracker.record(map[string]int{"a": 9}, map[string]int{"a": 1}, names, now.Add(time.Minute))
 	if len(got) != 1 || got[0].Count != 4 {
-		t.Fatalf("second restart: %+v", got)
+		t.Fatalf("crashed again: %+v", got)
 	}
-	if got := tracker.record(map[string]int{"a": 9, "c": 0}, names, now.Add(containerRestartWindow+3*time.Minute)); len(got) != 0 {
+	if got := tracker.record(map[string]int{"a": 9}, nil, names, now.Add(containerRestartWindow+2*time.Minute)); len(got) != 0 {
 		t.Fatalf("after the window: %+v", got)
 	}
 }
 
 func TestContainerRestartsReadFromDocker(t *testing.T) {
 	count := 2
+	events := ""
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/containers/json":
@@ -193,6 +188,8 @@ func TestContainerRestartsReadFromDocker(t *testing.T) {
 			fmt.Fprintf(w, `{"RestartCount":%d}`, count)
 		case "/containers/gone/json":
 			w.WriteHeader(http.StatusNotFound)
+		case "/events":
+			fmt.Fprint(w, events)
 		default:
 			t.Errorf("unexpected request: %s", r.URL.Path)
 		}
@@ -203,7 +200,14 @@ func TestContainerRestartsReadFromDocker(t *testing.T) {
 	if _, err := tracker.update(server.URL, time.Now()); err != nil {
 		t.Fatal(err)
 	}
+	// An old count on first sight is not news, and a worker that exits 0 on purpose is not a crash
 	count = 3
+	events = `{"Actor":{"Attributes":{"exitCode":"0"}}}`
+	if got, err := tracker.update(server.URL, time.Now()); err != nil || len(got) != 0 {
+		t.Fatalf("clean exit: %+v, %v", got, err)
+	}
+	count = 5
+	events = `{"Actor":{"Attributes":{"exitCode":"1"}}}` + "\n" + `{"Actor":{"Attributes":{"exitCode":"0"}}}`
 	got, err := tracker.update(server.URL, time.Now())
 	if err != nil || len(got) != 1 || got[0].Name != "pocket-id" || got[0].Count != 1 {
 		t.Fatalf("got %+v, %v", got, err)

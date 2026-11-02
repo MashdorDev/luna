@@ -147,6 +147,59 @@ func TestReadArrayStatusRejectsAStaleOrEmptyCopy(t *testing.T) {
 	}
 }
 
+const arraySmartHealthy = `SMART overall-health self-assessment test result: PASSED
+ID# ATTRIBUTE_NAME          FLAG     VALUE WORST THRESH TYPE      UPDATED  WHEN_FAILED RAW_VALUE
+  5 Reallocated_Sector_Ct   0x0033   200   200   140    Pre-fail  Always       -       0
+  9 Power_On_Hours          0x0032   025   025   000    Old_age   Always       -       55312
+194 Temperature_Celsius     0x0022   108   100   000    Old_age   Always       -       35
+197 Current_Pending_Sector  0x0032   200   200   000    Old_age   Always       -       0
+199 UDMA_CRC_Error_Count    0x0032   200   200   000    Old_age   Always       -       1
+`
+
+func TestParseArraySmart(t *testing.T) {
+	if got := parseArraySmart(arraySmartHealthy); got != "" {
+		t.Fatalf("healthy: %q", got)
+	}
+
+	failing := `SMART overall-health self-assessment test result: FAILED!
+  5 Reallocated_Sector_Ct   0x0033   100   100   140    Pre-fail  Always   FAILING_NOW 12
+194 Temperature_Celsius     0x0022   108   100   000    Old_age   Always       -       58 (Min/Max 20/60)
+197 Current_Pending_Sector  0x0032   200   200   000    Old_age   Always       -       1
+199 UDMA_CRC_Error_Count    0x0032   200   200   000    Old_age   Always       -       10
+`
+	want := "SMART failed, 12 reallocated sectors, 58°C, 1 pending sector, 10 cable errors"
+	if got := parseArraySmart(failing); got != want {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestReadArraySmartProblems(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Now()
+
+	if got := readArraySmartProblems(filepath.Join(dir, "missing"), now); len(got) != 0 {
+		t.Fatalf("no directory should mean no check: %+v", got)
+	}
+	stale := []arrayDiskProblem{{Name: "SMART", Status: "no recent data"}}
+	if got := readArraySmartProblems(dir, now); !slices.Equal(got, stale) {
+		t.Fatalf("empty directory: %+v", got)
+	}
+
+	bad := "197 Current_Pending_Sector  0x0032   200   200   000    Old_age   Always       -       3\n"
+	for name, content := range map[string]string{"parity": arraySmartHealthy, "disk1": bad} {
+		if err := os.WriteFile(filepath.Join(dir, name+".txt"), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want := []arrayDiskProblem{{"disk1", "3 pending sectors"}}
+	if got := readArraySmartProblems(dir, now); !slices.Equal(got, want) {
+		t.Fatalf("got %+v", got)
+	}
+	if got := readArraySmartProblems(dir, now.Add(arraySmartMaxAge+time.Minute)); !slices.Equal(got, stale) {
+		t.Fatalf("old files: %+v", got)
+	}
+}
+
 func TestArrayStatusRendersEachState(t *testing.T) {
 	widget := &arrayStatusWidget{File: "unused"}
 	if err := widget.initialize(); err != nil {

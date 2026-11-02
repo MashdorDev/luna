@@ -2444,6 +2444,8 @@ Shows Unraid disks that need attention, or "All N disks OK" when none do. Empty 
 
 Unraid replaces `/var/local/emhttp/disks.ini` every 20 seconds or so, so a mount of that one file goes stale, and its directory also holds credentials. Copy the file into a mounted directory from a host cron job instead. Keep the original time with `cp -p`: a file more than 10 minutes old is reported as an error.
 
+To also warn about failing disks, put one `smartctl -H -A` output per disk in a `smart` directory next to the file, named `<disk>.txt`. Bad sectors, a failed health check, 10 or more cable errors or 55°C and above show as problems. A directory with no file newer than 3 hours shows "no recent data".
+
 The `cockpit` widget takes the same two values under `array-status:` and adds a row to "Needs you".
 
 #### Properties

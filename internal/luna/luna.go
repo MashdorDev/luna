@@ -163,6 +163,12 @@ func newApplication(c *config) (*application, error) {
 		return nil, fmt.Errorf("initializing default theme: %v", err)
 	}
 
+	if !config.Theme.DisablePicker {
+		if err := config.initSystemTheme(); err != nil {
+			return nil, err
+		}
+	}
+
 	//
 	// Init pages
 	//
@@ -393,6 +399,8 @@ func (a *application) resolveUserDefinedAssetPath(path string) string {
 
 type templateRequestData struct {
 	Theme *themeProperties
+	// no theme picked, so the page follows the OS appearance
+	FollowSystem bool
 }
 
 type templateData struct {
@@ -414,6 +422,9 @@ func (a *application) populateTemplateRequestData(data *templateRequestData, r *
 			if exists {
 				theme = preset
 			}
+		} else if a.Config.Theme.System != nil {
+			data.FollowSystem = true
+			theme = a.Config.Theme.System.Dark
 		}
 	}
 

@@ -10,10 +10,27 @@ import (
 var (
 	themeStyleTemplate         = mustParseTemplate("theme-style.gotmpl")
 	themePresetPreviewTemplate = mustParseTemplate("theme-preset-preview.html")
+	themeSystemPreviewTemplate = mustParseTemplate("theme-system-preview.html")
 )
 
 func (a *application) handleThemeChangeRequest(w http.ResponseWriter, r *http.Request) {
 	themeKey := r.PathValue("key")
+
+	if themeKey == "system" {
+		if a.Config.Theme.System == nil {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		// no cookie is what makes the page follow the OS appearance
+		http.SetCookie(w, &http.Cookie{
+			Name:     "theme",
+			Path:     a.Config.Server.BaseURL + "/",
+			SameSite: http.SameSiteLaxMode,
+			MaxAge:   -1,
+		})
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
 
 	properties, exists := a.Config.Theme.Presets.Get(themeKey)
 	if !exists && themeKey != "default" {
@@ -104,4 +121,83 @@ func (t1 *themeProperties) SameAs(t2 *themeProperties) bool {
 		return false
 	}
 	return true
+}
+
+type systemThemes struct {
+	Light *themeProperties `json:"-"`
+	Dark  *themeProperties `json:"-"`
+}
+
+type systemThemeJS struct {
+	Key        string `json:"key"`
+	CSS        string `json:"css"`
+	Background string `json:"background"`
+	Light      bool   `json:"light"`
+}
+
+type clientThemes struct {
+	All   map[string]systemThemeJS `json:"all"`
+	Light string                   `json:"light"`
+	Dark  string                   `json:"dark"`
+}
+
+// ClientThemes lets the page pick its theme from the cookie in the browser, so a
+// page shell cached under another cookie (proxy or service worker) still renders
+// the right theme
+func (c *config) ClientThemes() clientThemes {
+	js := func(t *themeProperties) systemThemeJS {
+		return systemThemeJS{Key: t.Key, CSS: string(t.CSS), Background: t.BackgroundColorAsHex, Light: t.Light}
+	}
+	ct := clientThemes{All: map[string]systemThemeJS{"default": js(&c.Theme.themeProperties)}}
+	for key, t := range c.Theme.Presets.Items() {
+		ct.All[key] = js(t)
+	}
+	if c.Theme.System != nil {
+		ct.Light, ct.Dark = c.Theme.System.Light.Key, c.Theme.System.Dark.Key
+	}
+	return ct
+}
+
+func (c *config) initSystemTheme() error {
+	find := func(key string, fallback *themeProperties) (*themeProperties, error) {
+		if key == "" {
+			return fallback, nil
+		}
+		if key == "default" {
+			return &c.Theme.themeProperties, nil
+		}
+		t, ok := c.Theme.Presets.Get(key)
+		if !ok {
+			return nil, fmt.Errorf("theme preset %q for the system theme does not exist", key)
+		}
+		return t, nil
+	}
+
+	defaultLight, _ := c.Theme.Presets.Get("default-light")
+	var defaultDark *themeProperties
+	if !c.Theme.Light {
+		defaultDark = &c.Theme.themeProperties
+	} else if t, ok := c.Theme.Presets.Get("default-dark"); ok {
+		defaultDark = t
+	}
+
+	light, err := find(c.Theme.SystemLight, defaultLight)
+	if err != nil {
+		return err
+	}
+	dark, err := find(c.Theme.SystemDark, defaultDark)
+	if err != nil {
+		return err
+	}
+	if light == nil || dark == nil {
+		return nil
+	}
+
+	c.Theme.System = &systemThemes{Light: light, Dark: dark}
+	preview, err := executeTemplateToString(themeSystemPreviewTemplate, c.Theme.System)
+	if err != nil {
+		return fmt.Errorf("compiling system theme preview: %v", err)
+	}
+	c.Theme.SystemPreviewHTML = template.HTML(preview)
+	return nil
 }

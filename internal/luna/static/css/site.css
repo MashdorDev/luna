@@ -370,6 +370,19 @@ kbd:active {
     border-color: var(--color-text-base);
 }
 
+.theme-preset-system {
+    background: linear-gradient(135deg, var(--dark) 50%, var(--light) 50%);
+    color: var(--color-text-base);
+    min-width: 3.2rem;
+}
+
+.theme-system-icon {
+    width: 1.2rem;
+    height: 1.2rem;
+    color: #fff;
+    mix-blend-mode: difference;
+}
+
 .theme-preset-light {
     gap: 0.3rem;
     height: 1.8rem;

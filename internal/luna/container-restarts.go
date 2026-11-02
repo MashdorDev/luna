@@ -103,7 +103,7 @@ func (tracker *containerRestartTracker) update(source string, now time.Time) ([]
 		names[container.ID] = strings.TrimLeft(itemAtIndexOrDefault(container.Names, 0, container.ID), "/")
 
 		if previous, known := tracker.counts[container.ID]; known && count > previous {
-			crashes[container.ID], err = fetchContainerCrashCount(client, hostname, container.ID, tracker.checked, now)
+			crashes[container.ID], err = fetchContainerCrashCount(client, hostname, container.ID, tracker.checked)
 			if err != nil {
 				return nil, err
 			}
@@ -145,13 +145,15 @@ func fetchContainerRestartCount(client *http.Client, hostname, id string) (int, 
 	return details.RestartCount, true, nil
 }
 
-func fetchContainerCrashCount(client *http.Client, hostname, id string, since, until time.Time) (int, error) {
+// The window ends now, not when the check began: a crash during the check has raised the count
+// already, and would never be seen again.
+func fetchContainerCrashCount(client *http.Client, hostname, id string, since time.Time) (int, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	query := url.Values{
 		"since":   {strconv.FormatInt(since.Unix(), 10)},
-		"until":   {strconv.FormatInt(until.Unix(), 10)},
+		"until":   {strconv.FormatInt(time.Now().Unix(), 10)},
 		"filters": {fmt.Sprintf(`{"container":[%q],"event":["die"]}`, id)},
 	}
 	request, err := http.NewRequestWithContext(ctx, "GET", "http://"+hostname+"/events?"+query.Encode(), nil)

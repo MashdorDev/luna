@@ -196,9 +196,11 @@ func TestContainerRestartsReadFromDocker(t *testing.T) {
 	defer server.Close()
 
 	tracker := newContainerRestartTracker()
-	clean := func(n int) {
+	clean := func(n int, at time.Time) {
 		tracker.exitsMu.Lock()
-		tracker.cleanExits["a"] += n
+		for range n {
+			tracker.cleanExits["a"] = append(tracker.cleanExits["a"], at)
+		}
 		tracker.exitsMu.Unlock()
 	}
 
@@ -207,19 +209,20 @@ func TestContainerRestartsReadFromDocker(t *testing.T) {
 		t.Fatalf("first check: %+v, %v", got, err)
 	}
 	count = 3
-	clean(1)
+	clean(1, time.Now())
 	if got, err := tracker.update(server.URL, time.Now()); err != nil || len(got) != 0 {
 		t.Fatalf("clean exit: %+v, %v", got, err)
 	}
 	// Two restarts and one clean exit: one crash
 	count = 5
-	clean(1)
+	clean(1, time.Now())
 	got, err := tracker.update(server.URL, time.Now())
 	if err != nil || len(got) != 1 || got[0].Name != "pocket-id" || got[0].Count != 1 {
 		t.Fatalf("got %+v, %v", got, err)
 	}
-	// A rise nothing explains counts as a crash
+	// An old clean exit, as from a docker stop days ago, does not explain a new rise
 	count = 6
+	clean(1, time.Now().Add(-containerCleanExitMaxAge-time.Minute))
 	got, err = tracker.update(server.URL, time.Now())
 	if err != nil || len(got) != 1 || got[0].Count != 2 {
 		t.Fatalf("unexplained: %+v, %v", got, err)
@@ -240,7 +243,7 @@ func TestContainerRestartsReadExitStream(t *testing.T) {
 	if err := tracker.readExits(client, hostname); err == nil {
 		t.Fatal("a closed stream should report it")
 	}
-	if tracker.cleanExits["a"] != 1 || tracker.cleanExits["b"] != 1 {
+	if len(tracker.cleanExits["a"]) != 1 || len(tracker.cleanExits["b"]) != 1 {
 		t.Fatalf("got %+v", tracker.cleanExits)
 	}
 }

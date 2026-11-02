@@ -16,6 +16,10 @@ import (
 const containerRestartWindow = 24 * time.Hour
 const containerExitStreamRetry = 5 * time.Second
 
+// Checks run every few minutes, so an older clean exit came from a docker stop or restart and has
+// nothing to do with a later crash
+const containerCleanExitMaxAge = 5 * time.Minute
+
 type containerRestart struct {
 	Name  string
 	Count int
@@ -36,7 +40,7 @@ type containerRestartTracker struct {
 
 	watch      sync.Once
 	exitsMu    sync.Mutex
-	cleanExits map[string]int
+	cleanExits map[string][]time.Time
 }
 
 var containerRestarts = newContainerRestartTracker()
@@ -45,7 +49,7 @@ func newContainerRestartTracker() *containerRestartTracker {
 	return &containerRestartTracker{
 		counts:     make(map[string]int),
 		recent:     make(map[string]*containerRestart),
-		cleanExits: make(map[string]int),
+		cleanExits: make(map[string][]time.Time),
 	}
 }
 
@@ -95,7 +99,7 @@ func (tracker *containerRestartTracker) update(source string, now time.Time) ([]
 	}
 
 	counts := make(map[string]int, len(containers))
-	crashes := make(map[string]int)
+	rises := make(map[string]int)
 	names := make(map[string]string, len(containers))
 	for i := range containers {
 		container := &containers[i]
@@ -114,10 +118,15 @@ func (tracker *containerRestartTracker) update(source string, now time.Time) ([]
 		names[container.ID] = strings.TrimLeft(itemAtIndexOrDefault(container.Names, 0, container.ID), "/")
 
 		if previous, known := tracker.counts[container.ID]; known && count > previous {
-			crashes[container.ID] = tracker.takeCleanExits(container.ID, count-previous)
+			rises[container.ID] = count - previous
 		}
 	}
 
+	// Only once every inspect has worked: a failed check sees these rises again next time
+	crashes := make(map[string]int, len(rises))
+	for id, rise := range rises {
+		crashes[id] = tracker.takeCleanExits(id, rise, now)
+	}
 	tracker.forgetExits(counts)
 	return tracker.record(counts, crashes, names, now), nil
 }
@@ -153,13 +162,16 @@ func fetchContainerRestartCount(client *http.Client, hostname, id string) (int, 
 	return details.RestartCount, true, nil
 }
 
-// takeCleanExits returns how many of a container's restarts its clean exits do not explain
-func (tracker *containerRestartTracker) takeCleanExits(id string, restarts int) int {
+// takeCleanExits returns how many of a container's restarts its recent clean exits do not explain
+func (tracker *containerRestartTracker) takeCleanExits(id string, restarts int, now time.Time) int {
 	tracker.exitsMu.Lock()
 	defer tracker.exitsMu.Unlock()
 
-	explained := min(tracker.cleanExits[id], restarts)
-	tracker.cleanExits[id] -= explained
+	exits := slices.DeleteFunc(tracker.cleanExits[id], func(exit time.Time) bool {
+		return now.Sub(exit) > containerCleanExitMaxAge
+	})
+	explained := min(len(exits), restarts)
+	tracker.cleanExits[id] = exits[explained:]
 	return restarts - explained
 }
 
@@ -210,7 +222,7 @@ func (tracker *containerRestartTracker) readExits(client *http.Client, hostname 
 		}
 		if event.Actor.Attributes.ExitCode == "0" {
 			tracker.exitsMu.Lock()
-			tracker.cleanExits[event.Actor.ID]++
+			tracker.cleanExits[event.Actor.ID] = append(tracker.cleanExits[event.Actor.ID], time.Now())
 			tracker.exitsMu.Unlock()
 		}
 	}

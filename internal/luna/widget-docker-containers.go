@@ -338,8 +338,10 @@ func newDockerClient(source string) (*http.Client, string, error) {
 		return &http.Client{}, parsed.Hostname() + ":" + port, nil
 	}
 
+	// A client is made per fetch, so a kept-alive connection would never be used again or closed
 	return &http.Client{
 		Transport: &http.Transport{
+			DisableKeepAlives: true,
 			DialContext: func(_ context.Context, _, _ string) (net.Conn, error) {
 				return net.Dial("unix", source)
 			},

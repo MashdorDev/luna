@@ -188,9 +188,11 @@ func TestContainerRestartsReadFromDocker(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/containers/json":
-			fmt.Fprint(w, `[{"Id":"a","Names":["/pocket-id"]},{"Id":"h","Names":["/one-shot"],"Labels":{"luna.hide":"true"}}]`)
+			fmt.Fprint(w, `[{"Id":"a","Names":["/pocket-id"]},{"Id":"h","Names":["/one-shot"],"Labels":{"luna.hide":"true"}},{"Id":"gone","Names":["/replaced"]}]`)
 		case "/containers/a/json":
 			fmt.Fprintf(w, `{"RestartCount":%d}`, count)
+		case "/containers/gone/json":
+			w.WriteHeader(http.StatusNotFound)
 		default:
 			t.Errorf("unexpected request: %s", r.URL.Path)
 		}
@@ -198,11 +200,11 @@ func TestContainerRestartsReadFromDocker(t *testing.T) {
 	defer server.Close()
 
 	tracker := &containerRestartTracker{counts: map[string]int{}, recent: map[string]*containerRestart{}}
-	if _, err := tracker.update(server.URL, false, time.Now()); err != nil {
+	if _, err := tracker.update(server.URL, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	count = 3
-	got, err := tracker.update(server.URL, false, time.Now())
+	got, err := tracker.update(server.URL, time.Now())
 	if err != nil || len(got) != 1 || got[0].Name != "pocket-id" || got[0].Count != 1 {
 		t.Fatalf("got %+v, %v", got, err)
 	}

@@ -442,7 +442,7 @@ func (widget *cockpitWidget) fetchArrayStatus(now time.Time) ([]cockpitRow, erro
 }
 
 func (widget *cockpitWidget) fetchContainerRestarts(now time.Time) ([]cockpitRow, error) {
-	restarts, err := containerRestarts.update(widget.ContainerRestarts.SockPath, false, now)
+	restarts, err := containerRestarts.update(widget.ContainerRestarts.SockPath, now)
 	if err != nil {
 		return nil, err
 	}

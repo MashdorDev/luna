@@ -2354,7 +2354,7 @@ Whether to only show running containers. If set to `true` only containers that a
 ##### `show-failing-only`
 Shows only containers that need attention, or a line saying all of them are running. Unhealthy, exited, dead, restarting, paused and created containers count as failing, including one grouped under a healthy parent. A one-shot container that finished with `Exited (0)` also counts, so hide it with the `luna.hide` label. This option ignores `running-only`, since stopped containers have to be read to be reported.
 
-Also lists containers that crashed and were restarted by their restart policy in the last 24 hours. A deploy, a reboot or `docker restart` does not count. The list is kept in memory, so it starts empty when Luna restarts.
+Also lists containers that crashed and were restarted by their restart policy in the last 24 hours. A deploy, a reboot or `docker restart` does not count. The list is kept in memory, so it starts empty when Luna restarts. It follows the `luna.hide` label but not this widget's other filters, and expects one Docker socket.
 
 #### Labels
 | Name | Description |

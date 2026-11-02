@@ -51,7 +51,7 @@ func (widget *dockerContainersWidget) update(ctx context.Context) {
 
 	var restarts []containerRestart
 	if err == nil && widget.ShowFailingOnly {
-		restarts, err = containerRestarts.update(widget.SockPath, widget.HideByDefault, time.Now())
+		restarts, err = containerRestarts.update(widget.SockPath, time.Now())
 	}
 
 	widget.renderMu.Lock()

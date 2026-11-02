@@ -23,6 +23,7 @@ type containerRestart struct {
 // policy raises that count, so a crash shows here and a deploy, reboot or docker restart does not.
 // A recreated container has a new ID and starts at its first count without a warning.
 type containerRestartTracker struct {
+	// Held across the fetch too: an older snapshot recorded over a newer one counts a restart twice
 	mu     sync.Mutex
 	counts map[string]int
 	recent map[string]*containerRestart
@@ -34,9 +35,6 @@ var containerRestarts = &containerRestartTracker{
 }
 
 func (tracker *containerRestartTracker) record(counts map[string]int, names map[string]string, now time.Time) []containerRestart {
-	tracker.mu.Lock()
-	defer tracker.mu.Unlock()
-
 	for id, count := range counts {
 		previous, known := tracker.counts[id]
 		if !known || count <= previous {
@@ -65,7 +63,12 @@ func (tracker *containerRestartTracker) record(counts map[string]int, names map[
 	return current
 }
 
-func (tracker *containerRestartTracker) update(source string, hideByDefault bool, now time.Time) ([]containerRestart, error) {
+// update honours the luna.hide label but not per-widget settings, because every caller shares one
+// history. Only one Docker socket is expected: a second would reset the first one's counts.
+func (tracker *containerRestartTracker) update(source string, now time.Time) ([]containerRestart, error) {
+	tracker.mu.Lock()
+	defer tracker.mu.Unlock()
+
 	containers, err := fetchDockerContainersFromSource(source, "", false, nil)
 	if err != nil {
 		return nil, err
@@ -79,12 +82,16 @@ func (tracker *containerRestartTracker) update(source string, hideByDefault bool
 	names := make(map[string]string, len(containers))
 	for i := range containers {
 		container := &containers[i]
-		if isDockerContainerHidden(container, hideByDefault) {
+		if isDockerContainerHidden(container, false) {
 			continue
 		}
-		count, err := fetchContainerRestartCount(client, hostname, container.ID)
+		count, exists, err := fetchContainerRestartCount(client, hostname, container.ID)
 		if err != nil {
 			return nil, err
+		}
+		// Removed since the list was fetched, as a deploy does
+		if !exists {
+			continue
 		}
 		counts[container.ID] = count
 		names[container.ID] = strings.TrimLeft(itemAtIndexOrDefault(container.Names, 0, container.ID), "/")
@@ -93,30 +100,33 @@ func (tracker *containerRestartTracker) update(source string, hideByDefault bool
 	return tracker.record(counts, names, now), nil
 }
 
-func fetchContainerRestartCount(client *http.Client, hostname, id string) (int, error) {
+func fetchContainerRestartCount(client *http.Client, hostname, id string) (int, bool, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	request, err := http.NewRequestWithContext(ctx, "GET", "http://"+hostname+"/containers/"+id+"/json", nil)
 	if err != nil {
-		return 0, fmt.Errorf("creating request: %w", err)
+		return 0, false, fmt.Errorf("creating request: %w", err)
 	}
 	response, err := client.Do(request)
 	if err != nil {
-		return 0, fmt.Errorf("sending request to socket: %w", err)
+		return 0, false, fmt.Errorf("sending request to socket: %w", err)
 	}
 	defer response.Body.Close()
 
+	if response.StatusCode == http.StatusNotFound {
+		return 0, false, nil
+	}
 	if response.StatusCode != http.StatusOK {
-		return 0, fmt.Errorf("non-200 response status: %s", response.Status)
+		return 0, false, fmt.Errorf("non-200 response status: %s", response.Status)
 	}
 
 	var details struct {
 		RestartCount int `json:"RestartCount"`
 	}
 	if err := json.NewDecoder(response.Body).Decode(&details); err != nil {
-		return 0, fmt.Errorf("decoding response: %w", err)
+		return 0, false, fmt.Errorf("decoding response: %w", err)
 	}
 
-	return details.RestartCount, nil
+	return details.RestartCount, true, nil
 }

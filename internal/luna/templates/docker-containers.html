@@ -1,6 +1,16 @@
 {{ template "widget-base.html" . }}
 
 {{- define "widget-content" }}
+{{- if .Restarts }}
+<ul class="list list-gap-10 margin-bottom-15">
+    {{- range .Restarts }}
+    <li class="flex justify-between items-center gap-15">
+        <div class="color-highlight">{{ .Name }}</div>
+        <div class="color-negative">restarted {{ if eq .Count 1 }}once{{ else }}{{ .Count }} times{{ end }}, <span {{ dynamicRelativeTimeAttrs .Last }}></span> ago</div>
+    </li>
+    {{- end }}
+</ul>
+{{- end }}
 <ul class="dynamic-columns list-gap-20 list-with-separator">
     {{- range .Containers }}
     <li class="docker-container flex items-center gap-15">

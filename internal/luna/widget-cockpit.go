@@ -146,6 +146,8 @@ type cockpitCompany struct {
 	Name       string
 	Currency   string
 	CurrencyID string
+	// currency id to code, for totals in a currency other than the company's
+	Codes map[string]string
 }
 
 type cockpitItem struct {
@@ -819,12 +821,11 @@ func (widget *cockpitWidget) invoiceCompany(index int) (cockpitCompany, error) {
 	if err != nil {
 		return cockpitCompany{}, err
 	}
-	company := cockpitCompany{Name: current.Get("data.settings.name").String(), CurrencyID: current.Get("data.settings.currency_id").String()}
+	company := cockpitCompany{Name: current.Get("data.settings.name").String(), CurrencyID: current.Get("data.settings.currency_id").String(), Codes: map[string]string{}}
 	for _, currency := range statics.Get("currencies").Array() {
-		if currency.Get("id").String() == company.CurrencyID {
-			company.Currency = currency.Get("code").String()
-		}
+		company.Codes[currency.Get("id").String()] = currency.Get("code").String()
 	}
+	company.Currency = company.Codes[company.CurrencyID]
 	// Don't cache a half answer for an hour: totals would label themselves with nothing
 	if company.Currency == "" {
 		return cockpitCompany{}, errors.New("no company currency")
@@ -872,9 +873,21 @@ func (widget *cockpitWidget) fetchInvoices(index int, now time.Time) ([]cockpitR
 	label := func(invoice gjson.Result) string {
 		return invoice.Get("client.display_name").String() + " #" + invoice.Get("number").String()
 	}
-	counted := func(invoice gjson.Result) bool {
-		return invoice.Get("client.settings.currency_id").String() == company.CurrencyID
+	// Totals are in the currency most open invoices use, which need not be the company's:
+	// a Canadian company billing in USD would otherwise show counts and no amounts
+	currencyOf := func(invoice gjson.Result) string { return invoice.Get("client.settings.currency_id").String() }
+	uses := map[string]int{}
+	for _, invoice := range append(unpaid.Get("data").Array(), drafts.Get("data").Array()...) {
+		uses[currencyOf(invoice)]++
 	}
+	mainID := company.CurrencyID
+	for id, n := range uses {
+		if company.Codes[id] != "" && (n > uses[mainID] || n == uses[mainID] && id < mainID && mainID != company.CurrencyID) {
+			mainID = id
+		}
+	}
+	mainCode := company.Codes[mainID]
+	counted := func(invoice gjson.Result) bool { return currencyOf(invoice) == mainID }
 
 	for _, invoice := range unpaid.Get("data").Array() {
 		balance := invoice.Get("balance").Float()
@@ -937,7 +950,7 @@ func (widget *cockpitWidget) fetchInvoices(index int, now time.Time) ([]cockpitR
 		if truncated {
 			sub = "Over 100 unpaid, total too low"
 		}
-		big, what := intl.Sprintf("%.0f", lateTotal), company.Currency+" late from "+from
+		big, what := intl.Sprintf("%.0f", lateTotal), mainCode+" late from "+from
 		if lateOther == len(lateItems) {
 			big, what = strconv.Itoa(lateOther), pluralWord(lateOther, "invoice", "invoices")+" late from "+from
 		} else if lateOther > 0 {
@@ -956,7 +969,7 @@ func (widget *cockpitWidget) fetchInvoices(index int, now time.Time) ([]cockpitR
 		if truncated {
 			sub += ", over 100 unpaid, total too low"
 		}
-		big, what := intl.Sprintf("%.0f", owedTotal), company.Currency+" not due yet"
+		big, what := intl.Sprintf("%.0f", owedTotal), mainCode+" not due yet"
 		if owedOther == len(owedItems) {
 			big, what = strconv.Itoa(owedOther), pluralWord(owedOther, "invoice", "invoices")+" not due yet"
 		}
@@ -970,7 +983,7 @@ func (widget *cockpitWidget) fetchInvoices(index int, now time.Time) ([]cockpitR
 		if draftOther > 0 {
 			sub += otherNote
 		}
-		big, what := intl.Sprintf("%.0f", draftTotal), company.Currency+" in draft"
+		big, what := intl.Sprintf("%.0f", draftTotal), mainCode+" in draft"
 		if draftOther == len(draftItems) {
 			big, what = strconv.Itoa(draftOther), pluralWord(draftOther, "draft", "drafts")+" in other currencies"
 		}

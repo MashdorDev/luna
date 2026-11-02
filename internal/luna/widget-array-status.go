@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"html/template"
 	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -17,6 +18,13 @@ var arrayStatusWidgetTemplate = mustParseTemplate("array-status.html", "widget-b
 // Unraid rewrites disks.ini every 20 seconds or so, and the copy keeps that time, so an older
 // file means Unraid or the copy job stopped
 const arrayStatusMaxAge = 10 * time.Minute
+
+// The SMART job runs hourly, so this allows two missed runs
+const arraySmartMaxAge = 3 * time.Hour
+
+// A cable error or two can sit in the count for years, so only a run of them says anything
+const arrayCableErrorLimit = 10
+const arrayHotCelsius = 55
 
 type arrayDiskProblem struct {
 	Name   string
@@ -82,7 +90,89 @@ func readArrayStatus(path string, now time.Time) (int, []arrayDiskProblem, error
 		return 0, nil, errors.New("no disks in the status file")
 	}
 
+	problems = append(problems, readArraySmartProblems(filepath.Join(filepath.Dir(path), "smart"), now)...)
+
 	return total, problems, nil
+}
+
+// readArraySmartProblems checks one smartctl output file per disk. Without the directory there is
+// nothing set up to check. With it, having no recent file is itself a problem, since disks would
+// otherwise look healthy after the job stops. An old report still counts: a sleeping disk keeps
+// its last one, and its bad sectors have not gone away
+func readArraySmartProblems(dir string, now time.Time) []arrayDiskProblem {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+
+	problems := make([]arrayDiskProblem, 0)
+	recent := 0
+	for _, entry := range entries {
+		name, isOutput := strings.CutSuffix(entry.Name(), ".txt")
+		if !isOutput {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		content, err := os.ReadFile(filepath.Join(dir, entry.Name()))
+		if err != nil {
+			continue
+		}
+		if now.Sub(info.ModTime()) <= arraySmartMaxAge {
+			recent++
+		}
+		if text := parseArraySmart(string(content)); text != "" {
+			problems = append(problems, arrayDiskProblem{Name: name, Status: text})
+		}
+	}
+
+	if recent == 0 {
+		problems = append(problems, arrayDiskProblem{Name: "SMART", Status: "no recent data"})
+	}
+
+	return problems
+}
+
+func parseArraySmart(content string) string {
+	found := make([]string, 0)
+	seen := make(map[string]bool)
+	sectors := map[string]string{
+		"5":   "reallocated",
+		"187": "uncorrectable",
+		"197": "pending",
+		"198": "unreadable",
+	}
+
+	for _, line := range strings.Split(content, "\n") {
+		if strings.Contains(line, "self-assessment test result:") && !strings.Contains(line, "PASSED") {
+			found = append(found, "SMART failed")
+			continue
+		}
+
+		// ID NAME FLAG VALUE WORST THRESH TYPE UPDATED WHEN_FAILED RAW_VALUE
+		fields := strings.Fields(line)
+		if len(fields) < 10 {
+			continue
+		}
+		raw, err := strconv.Atoi(fields[9])
+		// smartctl can list a failing attribute again in a second table
+		if err != nil || seen[fields[0]] {
+			continue
+		}
+		seen[fields[0]] = true
+
+		if kind, ok := sectors[fields[0]]; ok && raw > 0 {
+			found = append(found, strconv.Itoa(raw)+" "+kind+" "+pluralWord(raw, "sector", "sectors"))
+		} else if fields[0] == "199" && raw >= arrayCableErrorLimit {
+			found = append(found, strconv.Itoa(raw)+" cable errors")
+		} else if fields[0] == "194" && raw >= arrayHotCelsius {
+			found = append(found, strconv.Itoa(raw)+"°C")
+		}
+	}
+
+	return strings.Join(found, ", ")
 }
 
 func parseArrayStatus(content string) (int, []arrayDiskProblem) {

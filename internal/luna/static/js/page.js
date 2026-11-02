@@ -745,7 +745,7 @@ async function changeTheme(key, onChanged) {
         method: "POST",
     });
 
-    if (response.status != 200) {
+    if (!response.ok) {
         alert("Failed to set theme: " + response.statusText);
         return;
     }
@@ -755,9 +755,14 @@ async function changeTheme(key, onChanged) {
         .html("* { transition: none !important; }")
         .appendTo(document.head);
 
-    themeStyleElem.html(newThemeStyle);
-    document.documentElement.setAttribute("data-theme", key);
-    document.documentElement.setAttribute("data-scheme", response.headers.get("X-Scheme"));
+    if (key == "system") {
+        pageData.theme = key;
+        applySystemTheme();
+    } else {
+        themeStyleElem.html(newThemeStyle);
+        document.documentElement.setAttribute("data-theme", key);
+        document.documentElement.setAttribute("data-scheme", response.headers.get("X-Scheme"));
+    }
     typeof onChanged == "function" && onChanged();
     setTimeout(() => { tempStyle.remove(); }, 10);
 }

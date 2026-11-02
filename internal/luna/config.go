@@ -52,6 +52,12 @@ type config struct {
 
 		DisablePicker bool                                     `yaml:"disable-picker"`
 		Presets       orderedYAMLMap[string, *themeProperties] `yaml:"presets"`
+		// presets the "System" choice switches between with the OS appearance
+		SystemLight string `yaml:"system-light"`
+		SystemDark  string `yaml:"system-dark"`
+
+		System            *systemThemes `yaml:"-"`
+		SystemPreviewHTML template.HTML `yaml:"-"`
 	} `yaml:"theme"`
 
 	Branding struct {

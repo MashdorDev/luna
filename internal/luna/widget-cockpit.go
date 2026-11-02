@@ -875,7 +875,13 @@ func (widget *cockpitWidget) fetchInvoices(index int, now time.Time) ([]cockpitR
 	}
 	// Totals are in the currency most open invoices use, which need not be the company's:
 	// a Canadian company billing in USD would otherwise show counts and no amounts
-	currencyOf := func(invoice gjson.Result) string { return invoice.Get("client.settings.currency_id").String() }
+	currencyOf := func(invoice gjson.Result) string {
+		// a client on the company default has no currency_id of its own
+		if id := invoice.Get("client.settings.currency_id").String(); id != "" {
+			return id
+		}
+		return company.CurrencyID
+	}
 	uses := map[string]int{}
 	for _, invoice := range append(unpaid.Get("data").Array(), drafts.Get("data").Array()...) {
 		uses[currencyOf(invoice)]++

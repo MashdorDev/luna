@@ -94,6 +94,10 @@ type cockpitWidget struct {
 		File string `yaml:"file"`
 		URL  string `yaml:"url"`
 	} `yaml:"array-status"`
+	ContainerRestarts struct {
+		SockPath string `yaml:"sock-path"`
+		URL      string `yaml:"url"`
+	} `yaml:"container-restarts"`
 	SearchURL string `yaml:"search-url"`
 	Zones     []struct {
 		Timezone string `yaml:"timezone"`
@@ -292,6 +296,7 @@ func (widget *cockpitWidget) update(ctx context.Context) {
 	run("GlitchTip", widget.GlitchTip.URL != "", func() ([]cockpitRow, error) { return widget.fetchGlitchTip(now) })
 	run("Plane", widget.Plane.URL != "", func() ([]cockpitRow, error) { return widget.fetchPlane(now) })
 	run("Array", widget.ArrayStatus.File != "", func() ([]cockpitRow, error) { return widget.fetchArrayStatus(now) })
+	run("Containers", widget.ContainerRestarts.SockPath != "", func() ([]cockpitRow, error) { return widget.fetchContainerRestarts(now) })
 	for i := range widget.Invoices {
 		i := i
 		run(fmt.Sprintf("Invoice Ninja %d", i+1), true, func() ([]cockpitRow, error) { return widget.fetchInvoices(i, now) })
@@ -433,6 +438,29 @@ func (widget *cockpitWidget) fetchArrayStatus(now time.Time) ([]cockpitRow, erro
 	return []cockpitRow{{
 		Kind: "down", Group: "array", Tone: "hot", Big: strconv.Itoa(len(problems)),
 		Label: pluralWord(len(problems), "disk problem", "disk problems"), Sub: strings.Join(summary, ", "), Hint: "See disks", Items: items,
+	}}, nil
+}
+
+func (widget *cockpitWidget) fetchContainerRestarts(now time.Time) ([]cockpitRow, error) {
+	restarts, err := containerRestarts.update(widget.ContainerRestarts.SockPath, now)
+	if err != nil {
+		return nil, err
+	}
+	if len(restarts) == 0 {
+		return nil, nil
+	}
+
+	items := make([]cockpitItem, len(restarts))
+	summary := make([]string, len(restarts))
+	for i, restart := range restarts {
+		times := pluralWord(restart.Count, "once", strconv.Itoa(restart.Count)+" times")
+		items[i] = cockpitItem{Title: restart.Name, Tag: times, Tone: "warn", URL: widget.ContainerRestarts.URL}
+		summary[i] = restart.Name + " " + times
+	}
+
+	return []cockpitRow{{
+		Kind: "down", Group: "restarts", Tone: "warn", Big: strconv.Itoa(len(restarts)),
+		Label: pluralWord(len(restarts), "container restarted", "containers restarted"), Sub: strings.Join(summary, ", "), Hint: "See containers", Items: items,
 	}}, nil
 }
 

@@ -2354,6 +2354,8 @@ Whether to only show running containers. If set to `true` only containers that a
 ##### `show-failing-only`
 Shows only containers that need attention, or a line saying all of them are running. Unhealthy, exited, dead, restarting, paused and created containers count as failing, including one grouped under a healthy parent. A one-shot container that finished with `Exited (0)` also counts, so hide it with the `luna.hide` label. This option ignores `running-only`, since stopped containers have to be read to be reported.
 
+Also lists containers that crashed and were restarted by their restart policy in the last 24 hours. A deploy, a reboot or `docker restart` does not count. The list is kept in memory, so it starts empty when Luna restarts. It follows the `luna.hide` label but not this widget's other filters, and expects one Docker socket.
+
 #### Labels
 | Name | Description |
 | ---- | ----------- |
@@ -2446,7 +2448,7 @@ Unraid replaces `/var/local/emhttp/disks.ini` every 20 seconds or so, so a mount
 
 To also warn about failing disks, put one `smartctl -H -A` output per disk in a `smart` directory next to the file, named `<disk>.txt`. Bad sectors, a failed health check, 10 or more cable errors or 55°C and above show as problems. A directory with no file newer than 3 hours shows "no recent data".
 
-The `cockpit` widget takes the same two values under `array-status:` and adds a row to "Needs you".
+The `cockpit` widget takes the same two values under `array-status:` and adds a row to "Needs you". Its `container-restarts:` option takes `sock-path` and `url`, and adds a row for containers restarted in the last 24 hours.
 
 #### Properties
 

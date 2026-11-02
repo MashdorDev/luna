@@ -25,6 +25,7 @@ type dockerContainersWidget struct {
 	FormatContainerNames bool                         `yaml:"format-container-names"`
 	Containers           dockerContainerList          `yaml:"-"`
 	Total                int                          `yaml:"-"`
+	Restarts             []containerRestart           `yaml:"-"`
 	LabelOverrides       map[string]map[string]string `yaml:"containers"`
 }
 
@@ -48,6 +49,11 @@ func (widget *dockerContainersWidget) update(ctx context.Context) {
 		widget.LabelOverrides,
 	)
 
+	var restarts []containerRestart
+	if err == nil && widget.ShowFailingOnly {
+		restarts, err = containerRestarts.update(widget.SockPath, time.Now())
+	}
+
 	widget.renderMu.Lock()
 	defer widget.renderMu.Unlock()
 
@@ -55,6 +61,7 @@ func (widget *dockerContainersWidget) update(ctx context.Context) {
 		return
 	}
 
+	widget.Restarts = restarts
 	containers.sortByStateIconThenTitle()
 	total := containers.count()
 	if widget.ShowFailingOnly {
@@ -96,6 +103,7 @@ var dockerContainerStateIconPriorities = map[string]int{
 }
 
 type dockerContainerJsonResponse struct {
+	ID     string                `json:"Id"`
 	Names  []string              `json:"Names"`
 	Image  string                `json:"Image"`
 	State  string                `json:"State"`
@@ -315,20 +323,11 @@ func isDockerContainerHidden(container *dockerContainerJsonResponse, hideByDefau
 	return hideByDefault
 }
 
-func fetchDockerContainersFromSource(
-	source string,
-	category string,
-	runningOnly bool,
-	labelOverrides map[string]map[string]string,
-) ([]dockerContainerJsonResponse, error) {
-	var hostname string
-
-	var client *http.Client
+func newDockerClient(source string) (*http.Client, string, error) {
 	if strings.HasPrefix(source, "tcp://") || strings.HasPrefix(source, "http://") {
-		client = &http.Client{}
 		parsed, err := url.Parse(source)
 		if err != nil {
-			return nil, fmt.Errorf("parsing URL: %w", err)
+			return nil, "", fmt.Errorf("parsing URL: %w", err)
 		}
 
 		port := parsed.Port()
@@ -336,16 +335,27 @@ func fetchDockerContainersFromSource(
 			port = "80"
 		}
 
-		hostname = parsed.Hostname() + ":" + port
-	} else {
-		hostname = "docker"
-		client = &http.Client{
-			Transport: &http.Transport{
-				DialContext: func(_ context.Context, _, _ string) (net.Conn, error) {
-					return net.Dial("unix", source)
-				},
+		return &http.Client{}, parsed.Hostname() + ":" + port, nil
+	}
+
+	return &http.Client{
+		Transport: &http.Transport{
+			DialContext: func(_ context.Context, _, _ string) (net.Conn, error) {
+				return net.Dial("unix", source)
 			},
-		}
+		},
+	}, "docker", nil
+}
+
+func fetchDockerContainersFromSource(
+	source string,
+	category string,
+	runningOnly bool,
+	labelOverrides map[string]map[string]string,
+) ([]dockerContainerJsonResponse, error) {
+	client, hostname, err := newDockerClient(source)
+	if err != nil {
+		return nil, err
 	}
 
 	fetchAll := ternary(runningOnly, "false", "true")

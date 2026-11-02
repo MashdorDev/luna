@@ -2,7 +2,10 @@ package luna
 
 import (
 	"errors"
+	"fmt"
 	"html/template"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
@@ -155,6 +158,57 @@ ID# ATTRIBUTE_NAME          FLAG     VALUE WORST THRESH TYPE      UPDATED  WHEN_
 197 Current_Pending_Sector  0x0032   200   200   000    Old_age   Always       -       0
 199 UDMA_CRC_Error_Count    0x0032   200   200   000    Old_age   Always       -       1
 `
+
+func TestContainerRestartTrackerCountsOnlyNewRestarts(t *testing.T) {
+	tracker := &containerRestartTracker{counts: map[string]int{}, recent: map[string]*containerRestart{}}
+	names := map[string]string{"a": "pocket-id", "b": "luna"}
+	now := time.Now()
+
+	// An old count on first sight is not news
+	if got := tracker.record(map[string]int{"a": 5, "b": 0}, names, now); len(got) != 0 {
+		t.Fatalf("first check: %+v", got)
+	}
+	got := tracker.record(map[string]int{"a": 8, "b": 0}, names, now.Add(time.Minute))
+	if len(got) != 1 || got[0].Name != "pocket-id" || got[0].Count != 3 {
+		t.Fatalf("restarted: %+v", got)
+	}
+	// A recreated container has a new ID, so its count starts over without a warning
+	names["c"] = "luna"
+	got = tracker.record(map[string]int{"a": 9, "c": 0}, names, now.Add(2*time.Minute))
+	if len(got) != 1 || got[0].Count != 4 {
+		t.Fatalf("second restart: %+v", got)
+	}
+	if got := tracker.record(map[string]int{"a": 9, "c": 0}, names, now.Add(containerRestartWindow+3*time.Minute)); len(got) != 0 {
+		t.Fatalf("after the window: %+v", got)
+	}
+}
+
+func TestContainerRestartsReadFromDocker(t *testing.T) {
+	count := 2
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/containers/json":
+			fmt.Fprint(w, `[{"Id":"a","Names":["/pocket-id"]},{"Id":"h","Names":["/one-shot"],"Labels":{"luna.hide":"true"}},{"Id":"gone","Names":["/replaced"]}]`)
+		case "/containers/a/json":
+			fmt.Fprintf(w, `{"RestartCount":%d}`, count)
+		case "/containers/gone/json":
+			w.WriteHeader(http.StatusNotFound)
+		default:
+			t.Errorf("unexpected request: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	tracker := &containerRestartTracker{counts: map[string]int{}, recent: map[string]*containerRestart{}}
+	if _, err := tracker.update(server.URL, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	count = 3
+	got, err := tracker.update(server.URL, time.Now())
+	if err != nil || len(got) != 1 || got[0].Name != "pocket-id" || got[0].Count != 1 {
+		t.Fatalf("got %+v, %v", got, err)
+	}
+}
 
 func TestParseArraySmart(t *testing.T) {
 	if got := parseArraySmart(arraySmartHealthy); got != "" {

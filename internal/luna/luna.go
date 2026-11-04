@@ -182,6 +182,15 @@ func newApplication(c *config) (*application, error) {
 	// initialize context for background workers
 	app.monitorCtx, app.monitorCancel = context.WithCancel(context.Background())
 
+	if len(config.Calendar.Feeds) > 0 {
+		hub, err := newCalendarHub(config.Calendar)
+		if err != nil {
+			app.monitorCancel()
+			return nil, err
+		}
+		providers.calendar = hub
+	}
+
 	for p := range config.Pages {
 		page := &config.Pages[p]
 		page.PrimaryColumnIndex = -1
@@ -258,6 +267,10 @@ func newApplication(c *config) (*application, error) {
 		return nil, fmt.Errorf("parsing manifest.json: %v", err)
 	}
 	app.parsedManifest = []byte(manifest)
+
+	if providers.calendar != nil {
+		go providers.calendar.run(app.monitorCtx)
+	}
 
 	// start background updater to check monitor and custom-api widgets periodically
 	go func() {

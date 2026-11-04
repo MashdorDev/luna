@@ -25,7 +25,6 @@ var cockpitWidgetTemplate = mustParseTemplate("cockpit.html", "widget-base.html"
 const (
 	cockpitQuotesEvery    = 15 * time.Minute
 	cockpitLookupsEvery   = time.Hour
-	cockpitCalendarsEvery = 30 * time.Minute
 	cockpitDrawerErrors   = 10
 	cockpitNextEvents     = 4
 	cockpitNextHolidays   = 1
@@ -85,11 +84,6 @@ type cockpitWidget struct {
 		Host  string `yaml:"host"`
 		Token string `yaml:"token"`
 	} `yaml:"solidtime"`
-	Calendars []struct {
-		Name     string `yaml:"name"`
-		URL      string `yaml:"url"`
-		Holidays bool   `yaml:"holidays"`
-	} `yaml:"calendars"`
 	ArrayStatus struct {
 		File string `yaml:"file"`
 		URL  string `yaml:"url"`
@@ -121,8 +115,6 @@ type cockpitWidget struct {
 	quotesAt    map[string]time.Time
 	lookupsAt   time.Time
 	lookups     cockpitLookups
-	calendarsAt time.Time
-	calendarErr error
 }
 
 // What the services say about themselves, so config only needs an address and a token
@@ -199,9 +191,6 @@ type cockpitEvent struct {
 	At       string
 	Date     string
 	Calendar string
-	holiday  bool
-	start    time.Time
-	until    time.Time
 }
 
 func (widget *cockpitWidget) initialize() error {
@@ -305,7 +294,7 @@ func (widget *cockpitWidget) update(ctx context.Context) {
 	}
 
 	var hours cockpitHours
-	next := widget.Next
+	var next []cockpitEvent
 	var quotes marketList
 	var down, downURLs []string
 
@@ -321,25 +310,13 @@ func (widget *cockpitWidget) update(ctx context.Context) {
 	}()
 	go func() {
 		defer wg.Done()
-		upcoming := func(events []cockpitEvent) []cockpitEvent {
-			return slices.DeleteFunc(slices.Clone(events), func(event cockpitEvent) bool {
-				return event.until.Before(now)
-			})
+		if widget.Providers == nil || widget.Providers.calendar == nil {
+			return
 		}
-		// glance-ical refetches the whole feed each call: polling it every few minutes
-		// once pulled 9 GB a day from Google, so calendars keep a slower clock
-		if now.Sub(widget.calendarsAt) >= cockpitCalendarsEvery {
-			widget.calendarsAt = now
-			fresh, err := widget.fetchNextEvents(now)
-			widget.calendarErr = err
-			if fresh != nil || err == nil {
-				next = fresh
-			}
-		}
-		next = upcoming(next)
-		if widget.calendarErr != nil {
+		next = widget.nextEvents(widget.Providers.calendar, now)
+		if errs := widget.Providers.calendar.Errors(); len(errs) > 0 {
 			mu.Lock()
-			failures = append(failures, widget.calendarErr.Error())
+			failures = append(failures, errs...)
 			mu.Unlock()
 		}
 	}()
@@ -1089,79 +1066,26 @@ func (widget *cockpitWidget) fetchHours(now time.Time) (cockpitHours, error) {
 	return hours, nil
 }
 
-// fetchNextEvents merges every calendar into one list. One failing feed only loses that
-// feed's events, but if all fail the caller keeps the previous list.
-func (widget *cockpitWidget) fetchNextEvents(now time.Time) ([]cockpitEvent, error) {
-	var mu sync.Mutex
-	var wg sync.WaitGroup
-	var events []cockpitEvent
-	var lastErr error
-	answered := 0
-
-	for _, calendar := range widget.Calendars {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			request, err := cockpitRequest("GET", calendar.URL, nil, nil)
-			var data gjson.Result
-			if err == nil {
-				data, err = cockpitFetch(request)
-			}
-			mu.Lock()
-			defer mu.Unlock()
-			if err != nil {
-				lastErr = fmt.Errorf("Calendar %s: %s", calendar.Name, cockpitErrorText(err))
-				slog.Error("Cockpit calendar failed", "calendar", calendar.Name, "error", cockpitErrorText(err))
-				return
-			}
-			answered++
-			for _, entry := range data.Get("events").Array() {
-				start, err := time.Parse(time.RFC3339, entry.Get("start").String())
-				if err != nil {
-					continue
-				}
-				event := cockpitEvent{
-					Name: entry.Get("name").String(), Calendar: calendar.Name, holiday: calendar.Holidays, start: start,
-					At: start.Format(time.RFC3339), until: start.Add(time.Hour),
-				}
-				// All-day events come as midnight UTC, which would land on the evening before west of Greenwich
-				if entry.Get("all_day").Bool() {
-					event.start = time.Date(start.Year(), start.Month(), start.Day(), 0, 0, 0, 0, now.Location())
-					event.At, event.Date = "", start.Format("2006-01-02")
-					event.until = event.start.AddDate(0, 0, 1)
-				}
-				if event.until.Before(now) {
-					continue
-				}
-				events = append(events, event)
-			}
-		}()
-	}
-	wg.Wait()
-
-	if answered == 0 && lastErr != nil {
-		return nil, lastErr
-	}
-	// Accounts invited to the same meeting each report it, and feeds finish in any order
-	slices.SortStableFunc(events, func(a, b cockpitEvent) int {
-		if order := a.start.Compare(b.start); order != 0 {
-			return order
-		}
-		return strings.Compare(a.Name+a.Calendar, b.Name+b.Calendar)
-	})
-	events = slices.CompactFunc(events, func(a, b cockpitEvent) bool {
-		return a.start.Equal(b.start) && strings.EqualFold(a.Name, b.Name)
-	})
-	// Holiday feeds would otherwise fill the list before any real meeting
+// nextEvents lists the next meetings from the calendar hub. Holiday feeds would
+// otherwise fill the list before any real meeting.
+func (widget *cockpitWidget) nextEvents(hub *calendarHub, now time.Time) []cockpitEvent {
+	var next []cockpitEvent
 	holidays := 0
-	events = slices.DeleteFunc(events, func(event cockpitEvent) bool {
-		if !event.holiday {
-			return false
+	for _, event := range hub.Events(now, now.AddDate(0, 0, calendarHorizonDays)) {
+		if event.Holiday {
+			if holidays++; holidays > cockpitNextHolidays {
+				continue
+			}
 		}
-		holidays++
-		return holidays > cockpitNextHolidays
-	})
-	return events[:min(len(events), cockpitNextEvents)], lastErr
+		entry := cockpitEvent{Name: event.Name, Calendar: strings.Join(event.Calendars, ", "), At: event.Start.Format(time.RFC3339)}
+		if event.AllDay {
+			entry.At, entry.Date = "", event.Start.Format("2006-01-02")
+		}
+		if next = append(next, entry); len(next) == cockpitNextEvents {
+			break
+		}
+	}
+	return next
 }
 
 // Twelve Data allows 800 calls a day shared with the Markets page, so each symbol

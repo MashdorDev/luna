@@ -72,6 +72,8 @@ type config struct {
 		AppBackgroundColor string        `yaml:"app-background-color"`
 	} `yaml:"branding"`
 
+	Calendar calendarConfig `yaml:"calendar"`
+
 	Pages []page `yaml:"pages"`
 }
 

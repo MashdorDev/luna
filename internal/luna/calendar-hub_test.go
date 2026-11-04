@@ -123,3 +123,63 @@ func TestCalendarPlainTextKeepsLinkAddresses(t *testing.T) {
 		t.Fatalf("got %q\nwant %q", got, want)
 	}
 }
+
+func TestCalendarHubReadsGoogleCalendarAPI(t *testing.T) {
+	var tokens atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/token":
+			r.ParseForm()
+			if r.Form.Get("refresh_token") != "refresh" || r.Form.Get("client_secret") != "secret" {
+				http.Error(w, "bad", http.StatusBadRequest)
+				return
+			}
+			tokens.Add(1)
+			w.Write([]byte(`{"access_token":"access","expires_in":3600}`))
+		case r.URL.Path == "/calendars/primary/events":
+			if r.Header.Get("Authorization") != "Bearer access" || r.URL.Query().Get("singleEvents") != "true" {
+				http.Error(w, "no", http.StatusUnauthorized)
+				return
+			}
+			w.Write([]byte(`{"items":[
+				{"summary":"Standup","status":"confirmed","start":{"dateTime":"2026-11-05T10:00:00-05:00"},"end":{"dateTime":"2026-11-05T10:15:00-05:00"},"hangoutLink":"https://meet.google.com/abc-defg-hij","updated":"2026-11-04T12:00:00Z"},
+				{"summary":"Offsite","status":"tentative","start":{"date":"2026-11-06"},"end":{"date":"2026-11-07"}},
+				{"summary":"Skipped","start":{"dateTime":"2026-11-05T12:00:00Z"},"end":{"dateTime":"2026-11-05T13:00:00Z"},"attendees":[{"self":true,"responseStatus":"declined"}]},
+				{"summary":"Home","eventType":"workingLocation","start":{"date":"2026-11-05"},"end":{"date":"2026-11-06"}}
+			]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	calendarGoogleTokenURL, calendarGoogleAPI = server.URL+"/token", server.URL
+	defer func() {
+		calendarGoogleTokenURL, calendarGoogleAPI = "https://oauth2.googleapis.com/token", "https://www.googleapis.com/calendar/v3"
+	}()
+
+	hub, err := newCalendarHub(calendarConfig{Feeds: []calendarFeed{{Name: "Lost Tribe", Google: &calendarGoogle{ClientID: "id", ClientSecret: "secret", RefreshToken: "refresh"}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		events, err := hub.fetchFeed(0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(events) != 2 {
+			t.Fatalf("want 2 events, got %d", len(events))
+		}
+		if events[0].Link != "https://meet.google.com/abc-defg-hij" || events[0].End.Sub(events[0].Start) != 15*time.Minute {
+			t.Fatalf("standup: %+v", events[0])
+		}
+		if !events[1].AllDay || !events[1].Tentative || !events[1].Start.Equal(time.Date(2026, 11, 6, 0, 0, 0, 0, time.UTC)) {
+			t.Fatalf("offsite: %+v", events[1])
+		}
+	}
+	if tokens.Load() != 1 {
+		t.Fatalf("access token fetched %d times, want once", tokens.Load())
+	}
+	if _, err := newCalendarHub(calendarConfig{Feeds: []calendarFeed{{Name: "x", Google: &calendarGoogle{ClientID: "id"}}}}); err == nil {
+		t.Fatal("google feed without a refresh token was accepted")
+	}
+}

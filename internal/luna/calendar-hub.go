@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"html"
 	"log/slog"
+	"net/http"
 	"net/url"
 	"reflect"
 	"regexp"
@@ -53,6 +54,16 @@ type calendarFeed struct {
 	Hidden bool          `yaml:"hidden"`
 	Remind *bool         `yaml:"remind"`
 	Every  durationField `yaml:"every"`
+	// Read through the Calendar API instead of an iCal url, for Workspace
+	// accounts whose admin hides the secret iCal address
+	Google *calendarGoogle `yaml:"google"`
+}
+
+type calendarGoogle struct {
+	ClientID     string `yaml:"client-id"`
+	ClientSecret string `yaml:"client-secret"`
+	RefreshToken string `yaml:"refresh-token"`
+	Calendar     string `yaml:"calendar"`
 }
 
 type calendarEvent struct {
@@ -82,6 +93,9 @@ type calendarFeedState struct {
 	events  []calendarEvent
 	fetched time.Time
 	err     error
+	// Calendar API access token and when it stops working
+	token        string
+	tokenExpires time.Time
 }
 
 type calendarHub struct {
@@ -105,8 +119,16 @@ func newCalendarHub(c calendarConfig) (*calendarHub, error) {
 	}
 	for i := range hub.feeds {
 		feed := &hub.feeds[i]
-		if feed.Name == "" || feed.URL == "" {
-			return nil, fmt.Errorf("calendar feed %d needs a name and a url", i+1)
+		if feed.Name == "" || (feed.URL == "") == (feed.Google == nil) {
+			return nil, fmt.Errorf("calendar feed %d needs a name and either a url or google", i+1)
+		}
+		if g := feed.Google; g != nil {
+			if g.ClientID == "" || g.ClientSecret == "" || g.RefreshToken == "" {
+				return nil, fmt.Errorf("calendar feed %s: google needs client-id, client-secret and refresh-token", feed.Name)
+			}
+			if g.Calendar == "" {
+				g.Calendar = "primary"
+			}
 		}
 		if feed.Every == 0 {
 			feed.Every = durationField(ternary(feed.Holidays, calendarHolidayEvery, calendarMeetingEvery))
@@ -236,33 +258,39 @@ func calendarPlainText(raw string) string {
 
 var calendarLinkPattern = regexp.MustCompile(`https://[^\s"<>]*(meet\.google\.com|zoom\.us|teams\.microsoft\.com|teams\.live\.com|whereby\.com|discord\.gg|discord\.com)[^\s"<>]*`)
 
+// One event as a feed reports it, before it becomes a calendarEvent
+type calendarRaw struct {
+	name, uid, status, location, description string
+	start, end, changed                      time.Time
+	allDay                                   bool
+	link                                     string
+}
+
 func (hub *calendarHub) fetchFeed(index int) ([]calendarEvent, error) {
 	feed := hub.feeds[index]
-	request, err := cockpitRequest("GET", feed.URL, nil, nil)
-	if err != nil {
-		return nil, err
+	var raws []calendarRaw
+	var err error
+	if feed.Google != nil {
+		raws, err = hub.fetchGoogle(index)
+	} else {
+		raws, err = fetchICal(feed.URL)
 	}
-	data, err := cockpitFetch(request)
 	if err != nil {
 		return nil, err
 	}
 	remind := !feed.Holidays && (feed.Remind == nil || *feed.Remind)
 	var events []calendarEvent
-	for _, entry := range data.Get("events").Array() {
-		if strings.EqualFold(entry.Get("status").String(), "CANCELLED") {
+	for _, raw := range raws {
+		if strings.EqualFold(raw.status, "CANCELLED") || raw.start.IsZero() {
 			continue
 		}
-		start, err := time.Parse(time.RFC3339, entry.Get("start").String())
-		if err != nil {
-			continue
-		}
-		end, err := time.Parse(time.RFC3339, entry.Get("end").String())
-		if err != nil || !end.After(start) {
+		start, end := raw.start, raw.end
+		if !end.After(start) {
 			end = start.Add(time.Hour)
 		}
 		event := calendarEvent{
-			Name: entry.Get("name").String(), Start: start, End: end, AllDay: entry.Get("all_day").Bool(),
-			Calendars: []string{feed.Name}, Holiday: feed.Holidays, uid: entry.Get("uid").String(), remind: remind,
+			Name: raw.name, Start: start, End: end, AllDay: raw.allDay,
+			Calendars: []string{feed.Name}, Holiday: feed.Holidays, uid: raw.uid, remind: remind,
 		}
 		// All-day events come as midnight UTC. Keep the date and let each viewer place it in their own day.
 		if event.AllDay {
@@ -272,17 +300,147 @@ func (hub *calendarHub) fetchFeed(index int) ([]calendarEvent, error) {
 				event.End = event.Start.AddDate(0, 0, 1)
 			}
 		}
-		event.Tentative = strings.EqualFold(entry.Get("status").String(), "TENTATIVE")
-		event.Changed, _ = time.Parse(time.RFC3339, entry.Get("last_modified").String())
-		event.Location = strings.TrimSpace(entry.Get("location").String())
-		event.Notes = calendarPlainText(entry.Get("description").String())
-		event.Link = calendarLinkPattern.FindString(event.Location)
+		event.Tentative = strings.EqualFold(raw.status, "TENTATIVE")
+		event.Changed = raw.changed
+		event.Location = strings.TrimSpace(raw.location)
+		event.Notes = calendarPlainText(raw.description)
+		event.Link = raw.link
+		if event.Link == "" {
+			event.Link = calendarLinkPattern.FindString(event.Location)
+		}
 		if event.Link == "" {
 			event.Link = calendarLinkPattern.FindString(event.Notes)
 		}
 		events = append(events, event)
 	}
 	return events, nil
+}
+
+func fetchICal(feedURL string) ([]calendarRaw, error) {
+	request, err := cockpitRequest("GET", feedURL, nil, nil)
+	if err != nil {
+		return nil, err
+	}
+	data, err := cockpitFetch(request)
+	if err != nil {
+		return nil, err
+	}
+	var raws []calendarRaw
+	for _, entry := range data.Get("events").Array() {
+		start, err := time.Parse(time.RFC3339, entry.Get("start").String())
+		if err != nil {
+			continue
+		}
+		end, _ := time.Parse(time.RFC3339, entry.Get("end").String())
+		changed, _ := time.Parse(time.RFC3339, entry.Get("last_modified").String())
+		raws = append(raws, calendarRaw{
+			name: entry.Get("name").String(), uid: entry.Get("uid").String(), status: entry.Get("status").String(),
+			location: entry.Get("location").String(), description: entry.Get("description").String(),
+			start: start, end: end, changed: changed, allDay: entry.Get("all_day").Bool(),
+		})
+	}
+	return raws, nil
+}
+
+var (
+	calendarGoogleTokenURL = "https://oauth2.googleapis.com/token"
+	calendarGoogleAPI      = "https://www.googleapis.com/calendar/v3"
+)
+
+// googleToken trades the refresh token for an access token, kept until a minute before it expires
+func (hub *calendarHub) googleToken(index int, now time.Time) (string, error) {
+	hub.mu.Lock()
+	token, expires := hub.states[index].token, hub.states[index].tokenExpires
+	hub.mu.Unlock()
+	if token != "" && now.Before(expires) {
+		return token, nil
+	}
+	g := hub.feeds[index].Google
+	form := url.Values{
+		"client_id": {g.ClientID}, "client_secret": {g.ClientSecret},
+		"refresh_token": {g.RefreshToken}, "grant_type": {"refresh_token"},
+	}
+	request, err := http.NewRequest("POST", calendarGoogleTokenURL, strings.NewReader(form.Encode()))
+	if err != nil {
+		return "", err
+	}
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	data, err := cockpitFetch(request)
+	if err != nil {
+		return "", fmt.Errorf("google sign-in: %w", err)
+	}
+	token = data.Get("access_token").String()
+	if token == "" {
+		return "", fmt.Errorf("google sign-in returned no access token")
+	}
+	hub.mu.Lock()
+	hub.states[index].token = token
+	hub.states[index].tokenExpires = now.Add(time.Duration(data.Get("expires_in").Int())*time.Second - time.Minute)
+	hub.mu.Unlock()
+	return token, nil
+}
+
+func (hub *calendarHub) fetchGoogle(index int) ([]calendarRaw, error) {
+	now := time.Now()
+	token, err := hub.googleToken(index, now)
+	if err != nil {
+		return nil, err
+	}
+	query := url.Values{
+		"singleEvents": {"true"}, "orderBy": {"startTime"}, "maxResults": {"500"},
+		"timeMin": {now.AddDate(0, 0, -1).Format(time.RFC3339)},
+		"timeMax": {now.AddDate(0, 0, calendarHorizonDays).Format(time.RFC3339)},
+	}
+	target := calendarGoogleAPI + "/calendars/" + url.PathEscape(hub.feeds[index].Google.Calendar) + "/events?" + query.Encode()
+	request, err := cockpitRequest("GET", target, map[string]string{"Authorization": "Bearer " + token}, nil)
+	if err != nil {
+		return nil, err
+	}
+	data, err := cockpitFetch(request)
+	if err != nil {
+		// A revoked or expired token gets a fresh one on the retry
+		hub.mu.Lock()
+		hub.states[index].token = ""
+		hub.mu.Unlock()
+		return nil, err
+	}
+	var raws []calendarRaw
+	for _, item := range data.Get("items").Array() {
+		// Working location and similar entries are not meetings
+		if kind := item.Get("eventType").String(); kind == "workingLocation" || kind == "birthday" {
+			continue
+		}
+		declined := false
+		for _, attendee := range item.Get("attendees").Array() {
+			if attendee.Get("self").Bool() && attendee.Get("responseStatus").String() == "declined" {
+				declined = true
+			}
+		}
+		if declined {
+			continue
+		}
+		raw := calendarRaw{
+			name: item.Get("summary").String(), uid: item.Get("iCalUID").String(), status: item.Get("status").String(),
+			location: item.Get("location").String(), description: item.Get("description").String(),
+			link: item.Get("hangoutLink").String(),
+		}
+		raw.changed, _ = time.Parse(time.RFC3339, item.Get("updated").String())
+		for _, entry := range item.Get("conferenceData.entryPoints").Array() {
+			if raw.link == "" && entry.Get("entryPointType").String() == "video" {
+				raw.link = entry.Get("uri").String()
+			}
+		}
+		if day := item.Get("start.date").String(); day != "" {
+			raw.allDay = true
+			raw.start, _ = time.Parse(time.DateOnly, day)
+			raw.end, _ = time.Parse(time.DateOnly, item.Get("end.date").String())
+		} else {
+			raw.start, _ = time.Parse(time.RFC3339, item.Get("start.dateTime").String())
+			raw.end, _ = time.Parse(time.RFC3339, item.Get("end.dateTime").String())
+		}
+		raws = append(raws, raw)
+	}
+	return raws, nil
 }
 
 // Events returns every event that overlaps from..to, one entry per meeting even when

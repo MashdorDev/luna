@@ -109,6 +109,7 @@ type cockpitWidget struct {
 	Hours       cockpitHours   `yaml:"-"`
 	Agenda      []calendarEntry `yaml:"-"`
 	Calendar    *calendarHub   `yaml:"-"`
+	calendarAt  int64
 	Quotes      marketList     `yaml:"-"`
 	Updated     time.Time      `yaml:"-"`
 	quotesAt    map[string]time.Time
@@ -193,6 +194,12 @@ func (widget *cockpitWidget) initialize() error {
 		widget.SearchURL = "https://duckduckgo.com/?q={QUERY}"
 	}
 	return nil
+}
+
+// The first update after a restart can land before the calendars are read, which would
+// leave Home empty for the 3 minute cache
+func (widget *cockpitWidget) calendarChanged() bool {
+	return widget.Providers != nil && widget.Providers.calendar != nil && widget.Providers.calendar.Version() != widget.calendarAt
 }
 
 func (widget *cockpitWidget) Render() template.HTML {
@@ -306,6 +313,7 @@ func (widget *cockpitWidget) update(ctx context.Context) {
 		if widget.Providers == nil || widget.Providers.calendar == nil {
 			return
 		}
+		widget.calendarAt = widget.Providers.calendar.Version()
 		next = widget.agenda(widget.Providers.calendar, now)
 		if errs := widget.Providers.calendar.Errors(); len(errs) > 0 {
 			mu.Lock()
@@ -1063,9 +1071,10 @@ func (widget *cockpitWidget) fetchHours(now time.Time) (cockpitHours, error) {
 }
 
 // agenda covers today and tomorrow for any viewer: a device can be up to 14 hours
-// off the server's zone, so the page picks its own two days out of this list.
+// off the server's zone, and an all-day event ends at midnight UTC, which is the evening
+// in Toronto, so the list reaches a day back and the page picks its own two days.
 func (widget *cockpitWidget) agenda(hub *calendarHub, now time.Time) []calendarEntry {
-	return hub.Entries(now, now.Add(62*time.Hour))
+	return hub.Entries(now.Add(-24*time.Hour), now.Add(62*time.Hour))
 }
 
 // Twelve Data allows 800 calls a day shared with the Markets page, so each symbol

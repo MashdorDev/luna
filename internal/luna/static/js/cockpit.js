@@ -118,13 +118,6 @@ function tickClock() {
         n.parentElement.hidden = n.dataset.ckZone === viewerZone() || hourParts(now, n.dataset.ckZone) === hourParts(now);
     });
     document.querySelectorAll('[data-ck-now]').forEach((n) => { n.style.left = (hourParts(now) / 14.4) + '%'; });
-    document.querySelectorAll('[data-ck-at]').forEach((n) => {
-        const at = new Date(n.dataset.ckAt);
-        setText(n, `${at.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' })}, ${clockText(at)}`);
-    });
-    document.querySelectorAll('[data-ck-day-only]').forEach((n) => {
-        setText(n, dateFrom(n.dataset.ckDayOnly).toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' }));
-    });
     document.querySelectorAll('[data-ck-day]').forEach((n) => {
         const date = dateFrom(n.dataset.ckDay);
         setText(n, date.toLocaleDateString(undefined, { weekday: 'narrow' }));

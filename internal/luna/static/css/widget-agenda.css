@@ -105,3 +105,24 @@
 .cal-djoin:hover { filter: brightness(1.1); }
 .cal-dnotes { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--color-separator); white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13.5px; line-height: 1.5; max-height: 45vh; overflow-y: auto; }
 .cal-dialog a:not(.cal-djoin) { color: var(--color-primary); }
+.cal-dchips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.cal-dchip { padding: 2px 8px; border-radius: 10px; font-size: 12px; background: var(--color-widget-background-highlight); color: var(--color-text-base); }
+.cal-dchip.warn { background: color-mix(in srgb, var(--ck-warn) 22%, transparent); color: var(--color-text-highlight); }
+.cal-dleft { margin-top: 2px; font-size: 13px; color: var(--color-primary); font-weight: 500; }
+.cal-dzones { display: grid; grid-template-columns: auto 1fr; gap: 2px 12px; margin-top: 10px; font-size: 13px; color: var(--color-text-base); font-variant-numeric: tabular-nums; }
+.cal-dzones span { display: contents; }
+.cal-dzones b { font-weight: 400; color: var(--color-text-subdue); }
+.cal-dactions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 14px; }
+.cal-dactions .cal-djoin { margin-top: 0; }
+.cal-dbtn { padding: 6px 12px; border-radius: 6px; border: 1px solid var(--color-separator); background: none; color: var(--color-text-base); font: inherit; font-size: 13px; cursor: pointer; }
+.cal-dbtn:hover { color: var(--color-text-highlight); border-color: var(--color-text-subdue); }
+.cal-dsec { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--color-separator); overflow-wrap: anywhere; }
+.cal-dlabel { font-size: 12px; color: var(--color-text-subdue); margin-bottom: 4px; }
+.cal-dsec .cal-dnotes { margin: 0; padding: 0; border: 0; }
+.cal-dclash { margin: 0; padding-left: 18px; color: var(--ck-warn); }
+.cal-dmap { font-size: 13px; }
+.cal-dremind { margin-top: 12px; font-size: 12px; color: var(--color-text-subdue); }
+.cal-bell { margin-left: auto; border: 0; background: none; padding: 0; font: inherit; font-size: 12px; color: var(--color-primary); cursor: pointer; }
+.cal-bell.on { color: var(--color-text-subdue); cursor: default; }
+.cal-bell[hidden] { display: none; }
+.ck-agenda .ck-cap { display: flex; align-items: baseline; gap: 8px; }

@@ -141,6 +141,13 @@ func TestCalendarHubKeepsEventsWhenAFeedFails(t *testing.T) {
 	hub.tick(now)
 	fail.Store(true)
 	hub.tick(now.Add(calendarMeetingEvery))
+	fail.Store(false)
+	hub.tick(now.Add(calendarMeetingEvery + calendarRetry))
+	if errs := hub.Errors(); len(errs) != 0 {
+		t.Fatalf("did not retry a minute after failing: %v", errs)
+	}
+	fail.Store(true)
+	hub.tick(now.Add(2*calendarMeetingEvery + calendarRetry))
 	if len(hub.Events(now, now.Add(24*time.Hour))) != 1 {
 		t.Fatal("a failed refresh emptied the calendar")
 	}

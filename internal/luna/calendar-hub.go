@@ -20,6 +20,7 @@ const (
 	calendarTick         = 30 * time.Second
 	calendarMeetingEvery = 10 * time.Minute
 	calendarHolidayEvery = 6 * time.Hour
+	calendarRetry        = time.Minute
 	calendarHorizonDays  = 15
 	// A reminder that comes later than this, after a restart or a late feed, would only confuse
 	calendarRemindLate = 2 * time.Minute
@@ -169,10 +170,12 @@ func (hub *calendarHub) tick(now time.Time) {
 			hub.mu.Lock()
 			defer hub.mu.Unlock()
 			hub.states[i].err = err
-			// A failed fetch keeps the last events, so a Google hiccup does not empty the agenda
+			// A failed fetch keeps the last events, so a Google hiccup does not empty the agenda.
+			// It retries in a minute: glance-ical can still be starting when Luna boots.
 			if err == nil {
 				hub.states[i].events = events
 			} else {
+				hub.states[i].fetched = now.Add(calendarRetry - time.Duration(hub.feeds[i].Every))
 				slog.Error("Calendar feed failed", "calendar", hub.feeds[i].Name, "error", cockpitErrorText(err))
 			}
 		}()

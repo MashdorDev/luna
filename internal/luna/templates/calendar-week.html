@@ -2,6 +2,12 @@
 
 {{ define "widget-content" }}
 <div class="cw" data-cal-root data-cal-home="{{ .Calendar.Zone }}" data-cal-hidden="{{ .Calendar.HiddenJSON }}" data-cal-remind="{{ .Calendar.RemindJSON }}" data-cal-zones="{{ .Calendar.ZonesJSON }}" data-cal-days="{{ .Days }}" data-cal-events="{{ .EventsJSON }}">
+    <div class="cw-top">
+        <div class="cw-summary" data-cal-summary></div>
+        <div class="cw-views" role="group" aria-label="View">
+            <button type="button" data-cal-view="week">Week</button><button type="button" data-cal-view="list">List</button>
+        </div>
+    </div>
     <div class="cw-legend">
         {{ range .Calendar.Calendars }}
         <label class="cal-c{{ .Color }}"><input type="checkbox" data-cal-toggle="{{ .Name }}"><i></i>{{ .Name }}</label>
@@ -9,6 +15,7 @@
         <button type="button" class="cal-bell" data-cal-notify hidden></button>
         <span class="cw-zone" data-cal-zone hidden></span>
     </div>
-    <div class="cw-scroll"><div class="cw-grid" data-cal-grid></div></div>
+    <div class="cw-scroll" data-cal-week-wrap><div class="cw-grid" data-cal-grid></div></div>
+    <div class="cw-list" data-cal-list hidden></div>
 </div>
 {{ end }}

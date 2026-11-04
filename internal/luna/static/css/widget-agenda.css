@@ -29,11 +29,13 @@
 .cal-c7 { --cal: var(--cal-7); }
 
 .ck-ag[hidden], .ck-agday[hidden], .ck-agempty[hidden] { display: none; }
-.ck-agday { margin: 12px 0 4px; font-size: 12px; color: var(--color-text-subdue); }
-.ck-ag:first-of-type .ck-agday, .ck-cap + .ck-ag .ck-agday { margin-top: 0; }
-.ck-agrow { display: grid; grid-template-columns: 3px minmax(0, 1fr); gap: 9px; padding: 4px 0; }
+.ck-agenda { display: flex; flex-direction: column; }
+.ck-agempty { order: 99999; }
+.ck-agday { margin: 8px 0 4px; font-size: 12px; color: var(--color-text-subdue); }
+.ck-agrow { display: grid; grid-template-columns: 3px minmax(0, 1fr); gap: 9px; width: 100%; padding: 4px 0; margin: 0; border: 0; background: none; color: inherit; font: inherit; text-align: start; cursor: pointer; border-radius: 4px; }
+.ck-agrow:hover .ck-agname { text-decoration: underline; text-decoration-color: var(--color-text-subdue); text-underline-offset: 2px; }
+.ck-agrow:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 2px; }
 .ck-agrow > i { border-radius: 2px; background: var(--cal); }
-.ck-agname a { color: inherit; text-decoration: underline; text-decoration-color: var(--color-text-subdue); text-underline-offset: 2px; }
 .ck-agrow .ck-sub { display: flex; flex-wrap: wrap; gap: 0 6px; font-variant-numeric: tabular-nums; }
 .ck-agrow .ck-sub b { font-weight: 500; color: var(--color-text-highlight); }
 .ck-agrow .ck-sub b:empty { display: none; }
@@ -47,7 +49,7 @@
 .ck-agempty { color: var(--color-text-subdue); font-size: 13px; }
 
 @media (max-width: 860px) {
-    .ck-side section.ck-agenda { display: block; flex-basis: 100%; margin-top: 4px; }
+    .ck-side section.ck-agenda { display: flex; flex-basis: 100%; margin-top: 4px; }
 }
 
 /* Week grid */
@@ -82,6 +84,24 @@
 .cw-event b { display: block; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cw-event span { color: var(--color-text-base); font-variant-numeric: tabular-nums; }
 .cw-event.past { opacity: .5; }
-a.cw-event:hover { background: color-mix(in srgb, var(--cal) 38%, var(--color-widget-background)); }
+.cw-event { font: inherit; text-align: start; cursor: pointer; }
+.cw-event:hover { background: color-mix(in srgb, var(--cal) 38%, var(--color-widget-background)); }
 .cw-now { position: absolute; left: -1px; right: 0; height: 2px; background: var(--color-negative); z-index: 1; pointer-events: none; }
 .cw-now::before { content: ""; position: absolute; left: -4px; top: -3px; width: 8px; height: 8px; border-radius: 50%; background: var(--color-negative); }
+
+/* Meeting details */
+.cal-dialog { position: fixed; inset: 0; margin: auto; height: fit-content; width: min(520px, calc(100vw - 32px)); max-height: calc(100vh - 64px); box-sizing: border-box; padding: 20px 22px; border: 1px solid var(--color-separator); border-radius: 10px;
+    background: var(--color-widget-background); color: var(--color-text-base); box-shadow: 0 16px 48px hsl(0 0% 0% / .35); }
+.cal-dialog::backdrop { background: hsl(0 0% 0% / .45); }
+.cal-dhead { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; align-items: start; }
+.cal-dhead h3 { margin: 0; font-size: 18px; font-weight: 500; color: var(--color-text-highlight); line-height: 1.3; overflow-wrap: anywhere; }
+.cal-dclose { border: 0; background: none; color: var(--color-text-subdue); font: inherit; font-size: 20px; line-height: 1; cursor: pointer; padding: 2px 4px; }
+.cal-dclose:hover { color: var(--color-text-highlight); }
+.cal-dwhen { margin-top: 6px; font-variant-numeric: tabular-nums; }
+.cal-dcals { display: flex; align-items: center; gap: 6px; margin-top: 4px; color: var(--color-text-subdue); font-size: 13px; }
+.cal-dcals i { width: 8px; height: 8px; border-radius: 50%; background: var(--cal); }
+.cal-dloc { margin-top: 12px; overflow-wrap: anywhere; }
+.cal-djoin { display: inline-block; margin-top: 14px; padding: 7px 14px; border-radius: 6px; background: var(--color-primary); color: var(--color-widget-background); font-weight: 500; text-decoration: none; }
+.cal-djoin:hover { filter: brightness(1.1); }
+.cal-dnotes { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--color-separator); white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13.5px; line-height: 1.5; max-height: 45vh; overflow-y: auto; }
+.cal-dialog a:not(.cal-djoin) { color: var(--color-primary); }

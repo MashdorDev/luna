@@ -4,12 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"html"
 	"log/slog"
 	"net/url"
+	"reflect"
 	"regexp"
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -56,6 +59,8 @@ type calendarEvent struct {
 	Calendars []string
 	Holiday   bool
 	Link      string
+	Location  string
+	Notes     string
 	uid       string
 	remind    bool
 }
@@ -81,13 +86,21 @@ type calendarHub struct {
 		before            []time.Duration
 	}
 
-	mu     sync.Mutex
-	states []calendarFeedState
-	sent   map[string]time.Time
+	mu      sync.Mutex
+	states  []calendarFeedState
+	version atomic.Int64
 }
 
+// Reminders already sent. A config reload builds a new hub, so this outlives it.
+var (
+	calendarSentMu sync.Mutex
+	calendarSent   = map[string]time.Time{}
+	// Reminders that came due before this process started were sent by the one before it
+	calendarProcessStart = time.Now()
+)
+
 func newCalendarHub(c calendarConfig) (*calendarHub, error) {
-	hub := &calendarHub{feeds: c.Feeds, zone: time.Local, sent: map[string]time.Time{}}
+	hub := &calendarHub{feeds: c.Feeds, zone: time.Local}
 	if c.Timezone != "" {
 		zone, err := time.LoadLocation(c.Timezone)
 		if err != nil {
@@ -138,7 +151,7 @@ func calendarFeedURL(raw string) string {
 }
 
 func (hub *calendarHub) run(ctx context.Context) {
-	hub.tick(time.Now())
+	hub.tick(ctx, time.Now())
 	ticker := time.NewTicker(calendarTick)
 	defer ticker.Stop()
 	for {
@@ -146,12 +159,17 @@ func (hub *calendarHub) run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case now := <-ticker.C:
-			hub.tick(now)
+			hub.tick(ctx, now)
 		}
 	}
 }
 
-func (hub *calendarHub) tick(now time.Time) {
+// Version changes whenever a feed brings different events, so widgets can redraw at once
+func (hub *calendarHub) Version() int64 {
+	return hub.version.Load()
+}
+
+func (hub *calendarHub) tick(ctx context.Context, now time.Time) {
 	var wg sync.WaitGroup
 	for i := range hub.feeds {
 		hub.mu.Lock()
@@ -174,6 +192,9 @@ func (hub *calendarHub) tick(now time.Time) {
 			// A failed fetch keeps the last events, so a Google hiccup does not empty the agenda.
 			// It retries in a minute: glance-ical can still be starting when Luna boots.
 			if err == nil {
+				if !reflect.DeepEqual(hub.states[i].events, events) {
+					hub.version.Add(1)
+				}
 				hub.states[i].events = events
 			} else {
 				hub.states[i].fetched = now.Add(calendarRetry - time.Duration(hub.feeds[i].Every))
@@ -182,7 +203,46 @@ func (hub *calendarHub) tick(now time.Time) {
 		}()
 	}
 	wg.Wait()
-	hub.remind(now)
+	// A reloaded config has a new hub, and this one must not remind alongside it
+	if ctx.Err() == nil {
+		hub.remind(now)
+	}
+}
+
+var (
+	calendarAnchorPattern = regexp.MustCompile(`(?is)<a\s[^>]*href="([^"]*)"[^>]*>(.*?)</a>`)
+	calendarBreakPattern  = regexp.MustCompile(`(?i)<br\s*/?>|</p>|</div>|</li>`)
+	calendarTagPattern    = regexp.MustCompile(`<[^>]*>`)
+	calendarGapPattern    = regexp.MustCompile(`\n{3,}`)
+	// Google wraps its join details in a line of -::~:~::~ that means nothing to a reader
+	calendarRulePattern = regexp.MustCompile(`(?m)^-?::~[:~]*-?$`)
+)
+
+const calendarNotesLimit = 4000
+
+// Google sends invite notes as HTML. The page shows them as text, so a link keeps its
+// address next to its label instead of disappearing with the tag.
+func calendarPlainText(raw string) string {
+	text := calendarAnchorPattern.ReplaceAllStringFunc(raw, func(anchor string) string {
+		parts := calendarAnchorPattern.FindStringSubmatch(anchor)
+		href, label := html.UnescapeString(parts[1]), strings.TrimSpace(html.UnescapeString(calendarTagPattern.ReplaceAllString(parts[2], "")))
+		if label == "" || label == href {
+			return href
+		}
+		return label + " (" + href + ")"
+	})
+	text = calendarBreakPattern.ReplaceAllString(text, "\n")
+	text = html.UnescapeString(calendarTagPattern.ReplaceAllString(text, ""))
+	text = calendarRulePattern.ReplaceAllString(text, "")
+	lines := strings.Split(strings.ReplaceAll(text, "\r", ""), "\n")
+	for i := range lines {
+		lines[i] = strings.TrimRight(lines[i], " \t\u00a0")
+	}
+	text = strings.TrimSpace(calendarGapPattern.ReplaceAllString(strings.Join(lines, "\n"), "\n\n"))
+	if runes := []rune(text); len(runes) > calendarNotesLimit {
+		text = string(runes[:calendarNotesLimit]) + "…"
+	}
+	return text
 }
 
 var calendarLinkPattern = regexp.MustCompile(`https://[^\s"<>]*(meet\.google\.com|zoom\.us|teams\.microsoft\.com|teams\.live\.com|whereby\.com|discord\.gg|discord\.com)[^\s"<>]*`)
@@ -223,9 +283,11 @@ func (hub *calendarHub) fetchFeed(index int) ([]calendarEvent, error) {
 				event.End = event.Start.AddDate(0, 0, 1)
 			}
 		}
-		event.Link = calendarLinkPattern.FindString(entry.Get("location").String())
+		event.Location = strings.TrimSpace(entry.Get("location").String())
+		event.Notes = calendarPlainText(entry.Get("description").String())
+		event.Link = calendarLinkPattern.FindString(event.Location)
 		if event.Link == "" {
-			event.Link = calendarLinkPattern.FindString(entry.Get("description").String())
+			event.Link = calendarLinkPattern.FindString(event.Notes)
 		}
 		events = append(events, event)
 	}
@@ -260,7 +322,15 @@ type calendarEntry struct {
 	Calendars []string `json:"calendars"`
 	Holiday   bool     `json:"holiday,omitempty"`
 	Link      string   `json:"link,omitempty"`
+	Location  string   `json:"location,omitempty"`
+	Notes     string   `json:"notes,omitempty"`
 	Color     int      `json:"color"`
+}
+
+// JSON is what the details panel opens with
+func (entry calendarEntry) JSON() string {
+	encoded, _ := json.Marshal(entry)
+	return string(encoded)
 }
 
 func (hub *calendarHub) Entries(from, to time.Time) []calendarEntry {
@@ -273,7 +343,7 @@ func (hub *calendarHub) Entries(from, to time.Time) []calendarEntry {
 	order := make([]time.Time, len(events))
 	for i, event := range events {
 		entries[i] = calendarEntry{
-			Name: event.Name, Calendars: event.Calendars, Holiday: event.Holiday, Link: event.Link, Color: colors[event.Calendars[0]],
+			Name: event.Name, Calendars: event.Calendars, Holiday: event.Holiday, Link: event.Link, Location: event.Location, Notes: event.Notes, Color: colors[event.Calendars[0]],
 			Start: event.Start.Format(time.RFC3339), End: event.End.Format(time.RFC3339),
 		}
 		order[i] = event.Start
@@ -316,6 +386,12 @@ func mergeCalendarEvents(events []calendarEvent) []calendarEvent {
 			merged[last].Holiday = merged[last].Holiday && event.Holiday
 			if merged[last].Link == "" {
 				merged[last].Link = event.Link
+			}
+			if merged[last].Location == "" {
+				merged[last].Location = event.Location
+			}
+			if len(event.Notes) > len(merged[last].Notes) {
+				merged[last].Notes = event.Notes
 			}
 			continue
 		}
@@ -370,28 +446,28 @@ func (hub *calendarHub) remind(now time.Time) {
 		}
 		for _, before := range hub.reminders.before {
 			at := event.Start.Add(-before)
-			if now.Before(at) || now.Sub(at) > calendarRemindLate {
+			if now.Before(at) || now.Sub(at) > calendarRemindLate || at.Before(calendarProcessStart.Add(-calendarTick)) {
 				continue
 			}
 			key := fmt.Sprintf("%s|%s|%d|%s", event.uid, strings.ToLower(event.Name), event.Start.Unix(), before)
-			hub.mu.Lock()
-			_, done := hub.sent[key]
+			calendarSentMu.Lock()
+			_, done := calendarSent[key]
 			if !done {
-				hub.sent[key] = event.Start
+				calendarSent[key] = event.Start
 			}
-			hub.mu.Unlock()
+			calendarSentMu.Unlock()
 			if !done {
 				go hub.notify(event, before)
 			}
 		}
 	}
-	hub.mu.Lock()
-	for key, start := range hub.sent {
+	calendarSentMu.Lock()
+	for key, start := range calendarSent {
 		if now.Sub(start) > 24*time.Hour {
-			delete(hub.sent, key)
+			delete(calendarSent, key)
 		}
 	}
-	hub.mu.Unlock()
+	calendarSentMu.Unlock()
 }
 
 func calendarReminderText(event calendarEvent, before time.Duration, zone *time.Location) string {

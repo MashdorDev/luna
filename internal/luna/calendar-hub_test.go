@@ -1,6 +1,7 @@
 package luna
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -75,8 +76,8 @@ func TestCalendarHubFetchesAndReminds(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	hub.tick(now)
-	hub.tick(now.Add(calendarTick))
+	hub.tick(context.Background(), now)
+	hub.tick(context.Background(), now.Add(calendarTick))
 	events := hub.Events(now, now.Add(48*time.Hour))
 	if len(events) != 2 || events[0].Name != "Client call" || events[0].Link != "https://zoom.us/j/1" {
 		t.Fatalf("got %+v", events)
@@ -100,9 +101,9 @@ func TestCalendarHubFetchesAndReminds(t *testing.T) {
 	}
 	waitFor(1)
 	// Later ticks send the 1 minute reminder once and never repeat the 10 minute one
-	hub.tick(now.Add(8*time.Minute + 45*time.Second))
-	hub.tick(now.Add(9 * time.Minute))
-	hub.tick(now.Add(13 * time.Minute))
+	hub.tick(context.Background(), now.Add(8*time.Minute + 45*time.Second))
+	hub.tick(context.Background(), now.Add(9 * time.Minute))
+	hub.tick(context.Background(), now.Add(13 * time.Minute))
 	waitFor(2)
 	time.Sleep(50 * time.Millisecond)
 
@@ -138,20 +139,28 @@ func TestCalendarHubKeepsEventsWhenAFeedFails(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Date(2026, 11, 5, 9, 0, 0, 0, time.UTC)
-	hub.tick(now)
+	hub.tick(context.Background(), now)
 	fail.Store(true)
-	hub.tick(now.Add(calendarMeetingEvery))
+	hub.tick(context.Background(), now.Add(calendarMeetingEvery))
 	fail.Store(false)
-	hub.tick(now.Add(calendarMeetingEvery + calendarRetry))
+	hub.tick(context.Background(), now.Add(calendarMeetingEvery + calendarRetry))
 	if errs := hub.Errors(); len(errs) != 0 {
 		t.Fatalf("did not retry a minute after failing: %v", errs)
 	}
 	fail.Store(true)
-	hub.tick(now.Add(2*calendarMeetingEvery + calendarRetry))
+	hub.tick(context.Background(), now.Add(2*calendarMeetingEvery + calendarRetry))
 	if len(hub.Events(now, now.Add(24*time.Hour))) != 1 {
 		t.Fatal("a failed refresh emptied the calendar")
 	}
 	if errs := hub.Errors(); len(errs) != 1 || !strings.Contains(errs[0], "Work") {
 		t.Fatalf("got %v", errs)
+	}
+}
+
+func TestCalendarPlainTextKeepsLinkAddresses(t *testing.T) {
+	raw := `Agenda:<br>1. Budget &amp; scope<br>-::~:~::~:~:~:~::~:~::-<br><br><a href="https://zoom.us/j/9?pwd=x">Join Zoom Meeting</a><br><a href="https://x.test/doc">https://x.test/doc</a>`
+	want := "Agenda:\n1. Budget & scope\n\nJoin Zoom Meeting (https://zoom.us/j/9?pwd=x)\nhttps://x.test/doc"
+	if got := calendarPlainText(raw); got != want {
+		t.Fatalf("got %q\nwant %q", got, want)
 	}
 }

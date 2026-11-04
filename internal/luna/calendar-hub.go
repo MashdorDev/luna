@@ -249,6 +249,54 @@ func (hub *calendarHub) Events(from, to time.Time) []calendarEvent {
 	return mergeCalendarEvents(events)
 }
 
+// calendarEntry is an event as the page scripts read it. All-day events carry dates
+// instead of times so each viewer places them in their own day.
+type calendarEntry struct {
+	Name      string   `json:"name"`
+	Start     string   `json:"start,omitempty"`
+	End       string   `json:"end,omitempty"`
+	Day       string   `json:"day,omitempty"`
+	EndDay    string   `json:"endDay,omitempty"`
+	Calendars []string `json:"calendars"`
+	Holiday   bool     `json:"holiday,omitempty"`
+	Link      string   `json:"link,omitempty"`
+	Color     int      `json:"color"`
+}
+
+func (hub *calendarHub) Entries(from, to time.Time) []calendarEntry {
+	colors := map[string]int{}
+	for _, info := range hub.Calendars() {
+		colors[info.Name] = info.Color
+	}
+	events := hub.Events(from, to)
+	entries := make([]calendarEntry, len(events))
+	order := make([]time.Time, len(events))
+	for i, event := range events {
+		entries[i] = calendarEntry{
+			Name: event.Name, Calendars: event.Calendars, Holiday: event.Holiday, Link: event.Link, Color: colors[event.Calendars[0]],
+			Start: event.Start.Format(time.RFC3339), End: event.End.Format(time.RFC3339),
+		}
+		order[i] = event.Start
+		if event.AllDay {
+			entries[i].Start, entries[i].End = "", ""
+			entries[i].Day, entries[i].EndDay = event.Start.Format("2006-01-02"), event.End.Format("2006-01-02")
+			// Midnight UTC is the evening before in Toronto, so all-day events sort by
+			// their own date's midnight to stay at the top of their day
+			order[i] = time.Date(event.Start.Year(), event.Start.Month(), event.Start.Day(), 0, 0, 0, 0, hub.zone)
+		}
+	}
+	indexes := make([]int, len(entries))
+	for i := range indexes {
+		indexes[i] = i
+	}
+	slices.SortStableFunc(indexes, func(a, b int) int { return order[a].Compare(order[b]) })
+	sorted := make([]calendarEntry, len(entries))
+	for i, index := range indexes {
+		sorted[i] = entries[index]
+	}
+	return sorted
+}
+
 func mergeCalendarEvents(events []calendarEvent) []calendarEvent {
 	slices.SortStableFunc(events, func(a, b calendarEvent) int {
 		if order := a.Start.Compare(b.Start); order != 0 {

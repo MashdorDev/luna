@@ -1,0 +1,51 @@
+/* One color per calendar, in the order the feeds are listed */
+:root {
+    --cal-0: hsl(216, 60%, 62%);
+    --cal-1: hsl(150, 42%, 52%);
+    --cal-2: hsl(32, 80%, 58%);
+    --cal-3: hsl(280, 45%, 66%);
+    --cal-4: hsl(352, 62%, 62%);
+    --cal-5: hsl(186, 50%, 50%);
+    --cal-6: hsl(52, 70%, 52%);
+    --cal-7: hsl(0, 0%, 60%);
+}
+:root[data-scheme="light"] {
+    --cal-0: hsl(216, 60%, 44%);
+    --cal-1: hsl(150, 50%, 32%);
+    --cal-2: hsl(28, 85%, 40%);
+    --cal-3: hsl(280, 42%, 46%);
+    --cal-4: hsl(352, 60%, 44%);
+    --cal-5: hsl(186, 60%, 32%);
+    --cal-6: hsl(48, 80%, 34%);
+    --cal-7: hsl(0, 0%, 42%);
+}
+.cal-c0 { --cal: var(--cal-0); }
+.cal-c1 { --cal: var(--cal-1); }
+.cal-c2 { --cal: var(--cal-2); }
+.cal-c3 { --cal: var(--cal-3); }
+.cal-c4 { --cal: var(--cal-4); }
+.cal-c5 { --cal: var(--cal-5); }
+.cal-c6 { --cal: var(--cal-6); }
+.cal-c7 { --cal: var(--cal-7); }
+
+.ck-ag[hidden], .ck-agday[hidden], .ck-agempty[hidden] { display: none; }
+.ck-agday { margin: 12px 0 4px; font-size: 12px; color: var(--color-text-subdue); }
+.ck-ag:first-of-type .ck-agday, .ck-cap + .ck-ag .ck-agday { margin-top: 0; }
+.ck-agrow { display: grid; grid-template-columns: 3px minmax(0, 1fr); gap: 9px; padding: 4px 0; }
+.ck-agrow > i { border-radius: 2px; background: var(--cal); }
+.ck-agname a { color: inherit; text-decoration: underline; text-decoration-color: var(--color-text-subdue); text-underline-offset: 2px; }
+.ck-agrow .ck-sub { display: flex; flex-wrap: wrap; gap: 0 6px; font-variant-numeric: tabular-nums; }
+.ck-agrow .ck-sub b { font-weight: 500; color: var(--color-text-highlight); }
+.ck-agrow .ck-sub b:empty { display: none; }
+.ck-agcal { color: var(--color-text-subdue); }
+.ck-ag.live .ck-agrow > i { width: 5px; margin-left: -1px; }
+.ck-ag.live .ck-sub b { color: var(--color-positive); }
+.ck-ag.hol { color: var(--color-text-subdue); }
+.ck-ag.hol .ck-agrow { padding: 1px 0; font-size: 13px; }
+.ck-ag.hol .ck-agrow > i { opacity: .5; }
+.ck-ag.hol .ck-sub { display: none; }
+.ck-agempty { color: var(--color-text-subdue); font-size: 13px; }
+
+@media (max-width: 860px) {
+    .ck-side section.ck-agenda { display: block; flex-basis: 100%; margin-top: 4px; }
+}

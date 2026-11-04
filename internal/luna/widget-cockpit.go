@@ -26,8 +26,6 @@ const (
 	cockpitQuotesEvery    = 15 * time.Minute
 	cockpitLookupsEvery   = time.Hour
 	cockpitDrawerErrors   = 10
-	cockpitNextEvents     = 4
-	cockpitNextHolidays   = 1
 )
 
 // update holds the page lock while it fetches, so a hung source can't be allowed the default 15 seconds
@@ -109,7 +107,8 @@ type cockpitWidget struct {
 	SiteCount   int            `yaml:"-"`
 	SitesDown   []string       `yaml:"-"`
 	Hours       cockpitHours   `yaml:"-"`
-	Next        []cockpitEvent `yaml:"-"`
+	Agenda      []cockpitEvent `yaml:"-"`
+	Calendar    *calendarHub   `yaml:"-"`
 	Quotes      marketList     `yaml:"-"`
 	Updated     time.Time      `yaml:"-"`
 	quotesAt    map[string]time.Time
@@ -187,10 +186,15 @@ type cockpitDay struct {
 }
 
 type cockpitEvent struct {
-	Name     string
-	At       string
-	Date     string
-	Calendar string
+	Name      string
+	Start     string
+	End       string
+	Day       string
+	EndDay    string
+	Calendars []string
+	Holiday   bool
+	Link      string
+	Color     int
 }
 
 func (widget *cockpitWidget) initialize() error {
@@ -313,7 +317,7 @@ func (widget *cockpitWidget) update(ctx context.Context) {
 		if widget.Providers == nil || widget.Providers.calendar == nil {
 			return
 		}
-		next = widget.nextEvents(widget.Providers.calendar, now)
+		next = widget.agenda(widget.Providers.calendar, now)
 		if errs := widget.Providers.calendar.Errors(); len(errs) > 0 {
 			mu.Lock()
 			failures = append(failures, errs...)
@@ -387,7 +391,10 @@ func (widget *cockpitWidget) update(ctx context.Context) {
 	widget.SiteCount = len(widget.Sites)
 	widget.SitesDown = down
 	widget.Hours = hours
-	widget.Next = next
+	widget.Agenda = next
+	if widget.Providers != nil {
+		widget.Calendar = widget.Providers.calendar
+	}
 	widget.Quotes = quotes
 	widget.Updated = now
 	widget.withError(nil)
@@ -1066,26 +1073,39 @@ func (widget *cockpitWidget) fetchHours(now time.Time) (cockpitHours, error) {
 	return hours, nil
 }
 
-// nextEvents lists the next meetings from the calendar hub. Holiday feeds would
-// otherwise fill the list before any real meeting.
-func (widget *cockpitWidget) nextEvents(hub *calendarHub, now time.Time) []cockpitEvent {
-	var next []cockpitEvent
-	holidays := 0
-	for _, event := range hub.Events(now, now.AddDate(0, 0, calendarHorizonDays)) {
-		if event.Holiday {
-			if holidays++; holidays > cockpitNextHolidays {
-				continue
-			}
-		}
-		entry := cockpitEvent{Name: event.Name, Calendar: strings.Join(event.Calendars, ", "), At: event.Start.Format(time.RFC3339)}
-		if event.AllDay {
-			entry.At, entry.Date = "", event.Start.Format("2006-01-02")
-		}
-		if next = append(next, entry); len(next) == cockpitNextEvents {
-			break
-		}
+// agenda covers today and tomorrow for any viewer: a device can be up to 14 hours
+// off the server's zone, so the page picks its own two days out of this list.
+func (widget *cockpitWidget) agenda(hub *calendarHub, now time.Time) []cockpitEvent {
+	colors := map[string]int{}
+	for _, info := range hub.Calendars() {
+		colors[info.Name] = info.Color
 	}
-	return next
+	var agenda []cockpitEvent
+	var order []time.Time
+	for _, event := range hub.Events(now, now.Add(62*time.Hour)) {
+		entry := cockpitEvent{
+			Name: event.Name, Calendars: event.Calendars, Holiday: event.Holiday, Link: event.Link, Color: colors[event.Calendars[0]],
+			Start: event.Start.Format(time.RFC3339), End: event.End.Format(time.RFC3339),
+		}
+		if event.AllDay {
+			entry.Start, entry.End = "", ""
+			entry.Day, entry.EndDay = event.Start.Format("2006-01-02"), event.End.Format("2006-01-02")
+		}
+		agenda = append(agenda, entry)
+		order = append(order, ternary(event.AllDay, time.Date(event.Start.Year(), event.Start.Month(), event.Start.Day(), 0, 0, 0, 0, now.Location()), event.Start))
+	}
+	// All-day events arrive as midnight UTC, which is the evening before in Toronto, so they
+	// sort by their own date's midnight to stay at the top of their day
+	indexes := make([]int, len(agenda))
+	for i := range indexes {
+		indexes[i] = i
+	}
+	slices.SortStableFunc(indexes, func(a, b int) int { return order[a].Compare(order[b]) })
+	sorted := make([]cockpitEvent, len(agenda))
+	for i, index := range indexes {
+		sorted[i] = agenda[index]
+	}
+	return sorted
 }
 
 // Twelve Data allows 800 calls a day shared with the Markets page, so each symbol

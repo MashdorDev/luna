@@ -2,6 +2,7 @@ package luna
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/url"
@@ -297,6 +298,18 @@ func (hub *calendarHub) Calendars() []calendarInfo {
 
 func (hub *calendarHub) Zone() string {
 	return hub.zone.String()
+}
+
+// The calendars a viewer sees switched off until they turn them on, for the page scripts
+func (hub *calendarHub) HiddenJSON() string {
+	names := []string{}
+	for _, feed := range hub.feeds {
+		if feed.Hidden {
+			names = append(names, feed.Name)
+		}
+	}
+	encoded, _ := json.Marshal(names)
+	return string(encoded)
 }
 
 func (hub *calendarHub) remind(now time.Time) {

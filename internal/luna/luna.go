@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"html/template"
+	"io/fs"
 	"log"
 	"net/http"
 	"path/filepath"
@@ -708,6 +709,19 @@ func (a *application) server() (func() error, func() error) {
 		w.Header().Add("Cache-Control", assetCacheControlValue)
 		w.Header().Add("Content-Type", "application/json")
 		w.Write(a.parsedManifest)
+	})
+
+	// Calendar reminders go through a service worker, since Android Chrome refuses
+	// new Notification(). It sits at the root so its scope covers every page.
+	mux.HandleFunc("GET /calendar-sw.js", func(w http.ResponseWriter, r *http.Request) {
+		script, err := fs.ReadFile(staticFS, "js/calendar-sw.js")
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Add("Cache-Control", "no-cache")
+		w.Header().Add("Content-Type", "text/javascript; charset=utf-8")
+		w.Write(script)
 	})
 
 	var absAssetsPath string

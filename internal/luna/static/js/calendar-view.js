@@ -296,7 +296,7 @@ function buildWeek(root, data) {
             block.style.left = `${(item.lane / item.lanes) * 100}%`;
             block.style.width = `${100 / item.lanes}%`;
             block.title = [event.name, timeRange(item.start, item.end, home), event.location, event.calendars.join(', '),
-                event.tentative && 'Tentative', event.changed && `Invite changed ${ago(new Date(event.changed))}`, item.lanes > 1 && 'Overlaps another meeting']
+                event.tentative && 'Tentative', event.changed && `Moved ${ago(new Date(event.changed))}`, item.lanes > 1 && 'Overlaps another meeting']
                 .filter(Boolean).join('\n');
             const name = element('b', '', event.name);
             name.dir = 'auto';
@@ -339,7 +339,7 @@ function buildList(root, data) {
             const line = element('span', 'cw-lline');
             if (event.link) line.append(videoMark());
             if (event.tentative) line.append(element('em', '', 'Tentative'));
-            if (event.changed) line.append(element('em', 'warn', `Changed ${ago(new Date(event.changed))}`));
+            if (event.changed) line.append(element('em', 'warn', `Moved ${ago(new Date(event.changed))}`));
             if (overlap > 1) line.append(element('em', 'warn', 'Overlaps'));
             const where = event.location && !/^https?:/i.test(event.location) ? `${event.location}, ` : '';
             line.append(`${where}${event.calendars.join(', ')}`);
@@ -376,8 +376,10 @@ function paintWeek(root) {
     setHidden(root.querySelector('[data-cal-list]'), view !== 'list');
 
     // Rebuilding on every tick would fire the observer again, so only when something changed.
-    // The hour is in the key so "next meeting" and the overlap counts move on as the day goes.
-    const key = [root.dataset.calEvents, dayKey(now), now.getHours(), view, JSON.stringify(choices())].join('#');
+    // Counting the starts and ends already passed puts every meeting boundary in the key,
+    // so "Now" and "Next" move on the moment a meeting starts or ends.
+    const passed = events.reduce((sum, event) => sum + (new Date(event.start) <= now) + (new Date(event.end) <= now), 0);
+    const key = [root.dataset.calEvents, dayKey(now), passed, view, JSON.stringify(choices())].join('#');
     if (grid.dataset.key !== key || !grid.firstChild) {
         const data = weekData(root, events, shown);
         buildSummary(root, data);
@@ -509,7 +511,7 @@ function openDetails(event, root) {
     const nodes = [head];
     const chips = element('div', 'cal-dchips');
     if (event.tentative) chips.append(element('span', 'cal-dchip', 'Tentative'));
-    if (event.changed) chips.append(element('span', 'cal-dchip warn', `Invite changed ${ago(new Date(event.changed))}`));
+    if (event.changed) chips.append(element('span', 'cal-dchip warn', `Moved ${ago(new Date(event.changed))}`));
     if (chips.childNodes.length) nodes.push(chips);
 
     const longDate = (date) => date.toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long' });
@@ -638,6 +640,44 @@ function sentList() {
     }
 }
 
+// Android Chrome throws on new Notification() and only shows them from a service worker.
+// Every browser goes through the worker when it registers; the constructor is the fallback.
+const BASE = new URL(import.meta.url).pathname.split('/static/')[0];
+let worker = null;
+let notifyFailed = false;
+if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register(`${BASE}/calendar-sw.js`, { scope: `${BASE}/` })
+        .then(() => navigator.serviceWorker.ready)
+        .then((registration) => { worker = registration; })
+        .catch(() => {});
+    navigator.serviceWorker.addEventListener('message', (message) => {
+        const wanted = message.data?.calendarOpen;
+        if (!wanted) return;
+        for (const root of document.querySelectorAll('[data-cal-root]')) {
+            const event = rootEvents(root).find((item) => `${item.name}|${item.start}` === wanted);
+            if (event) return openDetails(event, root);
+        }
+    });
+}
+
+function notify(event, root, title, options) {
+    if (worker) {
+        return worker.showNotification(title, { ...options, data: { event: `${event.name}|${event.start}`, page: location.href } })
+            .catch(() => { notifyFailed = true; paintBells(); });
+    }
+    try {
+        const note = new Notification(title, options);
+        note.onclick = () => {
+            window.focus();
+            openDetails(event, root);
+            note.close();
+        };
+    } catch {
+        notifyFailed = true;
+        paintBells();
+    }
+}
+
 function remind() {
     if (!('Notification' in window) || Notification.permission !== 'granted') return;
     const now = Date.now();
@@ -654,16 +694,11 @@ function remind() {
                 if (now < at || now - at > LATE || sent[key]) return;
                 sent[key] = start.getTime();
                 changed = true;
-                const note = new Notification(event.name, {
+                notify(event, root, event.name, {
                     body: `In ${minutes} min, ${timeRange(start, new Date(event.end), root.dataset.calHome)}\n${event.calendars.join(', ')}`,
                     tag: key,
                     requireInteraction: minutes <= 1,
                 });
-                note.onclick = () => {
-                    window.focus();
-                    openDetails(event, root);
-                    note.close();
-                };
             });
         });
     });
@@ -689,10 +724,12 @@ function paintBells() {
         const supported = 'Notification' in window && minutes.length > 0;
         setHidden(bell, !supported);
         if (!supported) return;
-        const state = Notification.permission;
-        setText(bell, state === 'granted' ? 'Reminders on' : state === 'denied' ? 'Reminders blocked' : 'Turn on reminders');
+        const state = notifyFailed ? 'failed' : Notification.permission;
+        const labels = { granted: 'Reminders on', denied: 'Reminders blocked', failed: 'Reminders not working here' };
+        setText(bell, labels[state] || 'Turn on reminders');
         const tip = state === 'denied' ? 'Allow notifications for this site in the browser settings'
-            : `${minutes.join(' and ')} min before each meeting, while a Luna tab is open`;
+            : state === 'failed' ? 'This browser refused to show a reminder. Try Luna in another browser.'
+                : `${minutes.join(' and ')} min before each meeting, while a Luna tab is open`;
         if (bell.title !== tip) bell.title = tip;
         if (bell.classList.contains('on') !== (state === 'granted')) bell.classList.toggle('on', state === 'granted');
     });

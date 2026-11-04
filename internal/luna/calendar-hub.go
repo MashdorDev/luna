@@ -27,7 +27,7 @@ const (
 	calendarHolidayEvery = 6 * time.Hour
 	calendarRetry        = time.Minute
 	calendarHorizonDays  = 15
-	// An invite changed this recently is flagged in its details, since a moved meeting is easy to miss
+	// A meeting moved this recently is flagged, since a moved meeting is easy to miss
 	calendarChangedWithin = 72 * time.Hour
 )
 
@@ -77,8 +77,10 @@ type calendarEvent struct {
 	Location  string
 	Notes     string
 	Tentative bool
-	Changed   time.Time
-	uid       string
+	// When the hub saw this meeting move to a new time. The feeds' own last-modified
+	// stamps change on every RSVP, so they cannot tell a move from an answer.
+	Changed time.Time
+	uid     string
 	remind    bool
 }
 
@@ -96,6 +98,8 @@ type calendarFeedState struct {
 	// Calendar API access token and when it stops working
 	token        string
 	tokenExpires time.Time
+	// When each meeting, by uid, was last seen moving
+	moved map[string]time.Time
 }
 
 type calendarHub struct {
@@ -207,6 +211,7 @@ func (hub *calendarHub) tick(now time.Time) {
 			// A failed fetch keeps the last events, so a Google hiccup does not empty the agenda.
 			// It retries in a minute: glance-ical can still be starting when Luna boots.
 			if err == nil {
+				hub.states[i].markMoved(events, now)
 				if !reflect.DeepEqual(hub.states[i].events, events) {
 					hub.version.Add(1)
 				}
@@ -218,6 +223,43 @@ func (hub *calendarHub) tick(now time.Time) {
 		}()
 	}
 	wg.Wait()
+}
+
+// markMoved flags events whose time changed since the last fetch. Recurring meetings
+// share one uid in iCal feeds, so only a uid that appears once on both sides is compared.
+func (state *calendarFeedState) markMoved(events []calendarEvent, now time.Time) {
+	single := func(list []calendarEvent) map[string]calendarEvent {
+		found, count := map[string]calendarEvent{}, map[string]int{}
+		for _, event := range list {
+			if event.uid != "" {
+				found[event.uid] = event
+				count[event.uid]++
+			}
+		}
+		for uid, n := range count {
+			if n > 1 {
+				delete(found, uid)
+			}
+		}
+		return found
+	}
+	if state.moved == nil {
+		state.moved = map[string]time.Time{}
+	}
+	before, after := single(state.events), single(events)
+	for uid, event := range after {
+		if old, ok := before[uid]; ok && (!old.Start.Equal(event.Start) || !old.End.Equal(event.End)) {
+			state.moved[uid] = now
+		}
+	}
+	for uid, at := range state.moved {
+		if now.Sub(at) > calendarChangedWithin {
+			delete(state.moved, uid)
+		}
+	}
+	for i := range events {
+		events[i].Changed = state.moved[events[i].uid]
+	}
 }
 
 var (
@@ -261,7 +303,7 @@ var calendarLinkPattern = regexp.MustCompile(`https://[^\s"<>]*(meet\.google\.co
 // One event as a feed reports it, before it becomes a calendarEvent
 type calendarRaw struct {
 	name, uid, status, location, description string
-	start, end, changed                      time.Time
+	start, end                               time.Time
 	allDay                                   bool
 	link                                     string
 }
@@ -301,7 +343,6 @@ func (hub *calendarHub) fetchFeed(index int) ([]calendarEvent, error) {
 			}
 		}
 		event.Tentative = strings.EqualFold(raw.status, "TENTATIVE")
-		event.Changed = raw.changed
 		event.Location = strings.TrimSpace(raw.location)
 		event.Notes = calendarPlainText(raw.description)
 		event.Link = raw.link
@@ -332,11 +373,10 @@ func fetchICal(feedURL string) ([]calendarRaw, error) {
 			continue
 		}
 		end, _ := time.Parse(time.RFC3339, entry.Get("end").String())
-		changed, _ := time.Parse(time.RFC3339, entry.Get("last_modified").String())
 		raws = append(raws, calendarRaw{
 			name: entry.Get("name").String(), uid: entry.Get("uid").String(), status: entry.Get("status").String(),
 			location: entry.Get("location").String(), description: entry.Get("description").String(),
-			start: start, end: end, changed: changed, allDay: entry.Get("all_day").Bool(),
+			start: start, end: end, allDay: entry.Get("all_day").Bool(),
 		})
 	}
 	return raws, nil
@@ -406,8 +446,8 @@ func (hub *calendarHub) fetchGoogle(index int) ([]calendarRaw, error) {
 	}
 	var raws []calendarRaw
 	for _, item := range data.Get("items").Array() {
-		// Working location and similar entries are not meetings
-		if kind := item.Get("eventType").String(); kind == "workingLocation" || kind == "birthday" {
+		// Working location, focus time and out of office are blocks of Dor's own day, not meetings
+		if kind := item.Get("eventType").String(); kind != "" && kind != "default" && kind != "fromGmail" {
 			continue
 		}
 		declined := false
@@ -420,11 +460,10 @@ func (hub *calendarHub) fetchGoogle(index int) ([]calendarRaw, error) {
 			continue
 		}
 		raw := calendarRaw{
-			name: item.Get("summary").String(), uid: item.Get("iCalUID").String(), status: item.Get("status").String(),
+			name: item.Get("summary").String(), uid: item.Get("id").String(), status: item.Get("status").String(),
 			location: item.Get("location").String(), description: item.Get("description").String(),
 			link: item.Get("hangoutLink").String(),
 		}
-		raw.changed, _ = time.Parse(time.RFC3339, item.Get("updated").String())
 		for _, entry := range item.Get("conferenceData.entryPoints").Array() {
 			if raw.link == "" && entry.Get("entryPointType").String() == "video" {
 				raw.link = entry.Get("uri").String()

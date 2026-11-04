@@ -71,7 +71,7 @@ func TestCalendarHubReadsFeeds(t *testing.T) {
 		t.Fatalf("got %+v", entries)
 	}
 	call, off := entries[0], entries[1]
-	if call.Name != "Client call" || call.Link != "https://zoom.us/j/1" || !call.Tentative || call.Changed == "" {
+	if call.Name != "Client call" || call.Link != "https://zoom.us/j/1" || !call.Tentative || call.Changed != "" {
 		t.Fatalf("got %+v", call)
 	}
 	// One of the two calendars wants reminders, so the merged meeting gets them
@@ -145,7 +145,9 @@ func TestCalendarHubReadsGoogleCalendarAPI(t *testing.T) {
 				{"summary":"Standup","status":"confirmed","start":{"dateTime":"2026-11-05T10:00:00-05:00"},"end":{"dateTime":"2026-11-05T10:15:00-05:00"},"hangoutLink":"https://meet.google.com/abc-defg-hij","updated":"2026-11-04T12:00:00Z"},
 				{"summary":"Offsite","status":"tentative","start":{"date":"2026-11-06"},"end":{"date":"2026-11-07"}},
 				{"summary":"Skipped","start":{"dateTime":"2026-11-05T12:00:00Z"},"end":{"dateTime":"2026-11-05T13:00:00Z"},"attendees":[{"self":true,"responseStatus":"declined"}]},
-				{"summary":"Home","eventType":"workingLocation","start":{"date":"2026-11-05"},"end":{"date":"2026-11-06"}}
+				{"summary":"Home","eventType":"workingLocation","start":{"date":"2026-11-05"},"end":{"date":"2026-11-06"}},
+				{"summary":"Focus","eventType":"focusTime","start":{"dateTime":"2026-11-05T14:00:00Z"},"end":{"dateTime":"2026-11-05T16:00:00Z"}},
+				{"summary":"Away","eventType":"outOfOffice","start":{"dateTime":"2026-11-06T14:00:00Z"},"end":{"dateTime":"2026-11-06T22:00:00Z"}}
 			]}`))
 		default:
 			http.NotFound(w, r)
@@ -181,5 +183,49 @@ func TestCalendarHubReadsGoogleCalendarAPI(t *testing.T) {
 	}
 	if _, err := newCalendarHub(calendarConfig{Feeds: []calendarFeed{{Name: "x", Google: &calendarGoogle{ClientID: "id"}}}}); err == nil {
 		t.Fatal("google feed without a refresh token was accepted")
+	}
+}
+
+func TestCalendarMarkMovedFlagsOnlyTimeChanges(t *testing.T) {
+	now := time.Date(2026, 11, 4, 12, 0, 0, 0, time.UTC)
+	at := func(h int) time.Time { return now.Add(time.Duration(h) * time.Hour) }
+	state := calendarFeedState{}
+	first := []calendarEvent{
+		{Name: "Sync", uid: "sync", Start: at(2), End: at(3)},
+		{Name: "Weekly", uid: "weekly", Start: at(4), End: at(5)},
+		{Name: "Weekly", uid: "weekly", Start: at(28), End: at(29)},
+	}
+	state.markMoved(first, now)
+	state.events = first
+	if !first[0].Changed.IsZero() {
+		t.Fatal("first fetch flagged a move")
+	}
+	// Notes change (an RSVP), Weekly instances shift: neither is a move we can tell
+	second := []calendarEvent{
+		{Name: "Sync", uid: "sync", Start: at(2), End: at(3), Notes: "Alice accepted"},
+		{Name: "Weekly", uid: "weekly", Start: at(5), End: at(6)},
+		{Name: "Weekly", uid: "weekly", Start: at(29), End: at(30)},
+	}
+	state.markMoved(second, now.Add(time.Minute))
+	state.events = second
+	for _, event := range second {
+		if !event.Changed.IsZero() {
+			t.Fatalf("%s flagged without a single-uid time change", event.Name)
+		}
+	}
+	third := []calendarEvent{{Name: "Sync", uid: "sync", Start: at(3), End: at(4)}}
+	state.markMoved(third, now.Add(2*time.Minute))
+	state.events = third
+	if !third[0].Changed.Equal(now.Add(2 * time.Minute)) {
+		t.Fatalf("move not flagged: %v", third[0].Changed)
+	}
+	later := []calendarEvent{{Name: "Sync", uid: "sync", Start: at(3), End: at(4)}}
+	state.markMoved(later, now.Add(time.Hour))
+	if !later[0].Changed.Equal(now.Add(2 * time.Minute)) {
+		t.Fatal("the move was forgotten on the next fetch")
+	}
+	state.markMoved(later, now.Add(80*time.Hour))
+	if !later[0].Changed.IsZero() {
+		t.Fatal("a move older than 72 hours is still flagged")
 	}
 }

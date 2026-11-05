@@ -97,7 +97,10 @@
 .cw-event.past { opacity: .5; }
 .cw-event { font: inherit; text-align: start; cursor: pointer; }
 .cw-event:hover { background: color-mix(in srgb, var(--cal) 38%, var(--color-widget-background)); }
-.cw-now { position: absolute; left: -1px; right: 0; height: 2px; background: var(--color-negative); z-index: 1; pointer-events: none; }
+.cw-now { position: absolute; left: -1px; right: 0; height: 2px; margin-top: -1px; background: var(--color-negative); z-index: 3; pointer-events: none; }
+/* The current time, in the hour column beside the line */
+.cw-now span { position: absolute; right: 100%; top: -8px; margin-right: 2px; padding: 0 4px; border-radius: 4px; background: var(--color-negative);
+    color: var(--color-widget-background); font-size: 11px; font-weight: 600; line-height: 16px; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .cw-now::before { content: ""; position: absolute; left: -4px; top: -3px; width: 8px; height: 8px; border-radius: 50%; background: var(--color-negative); }
 
 /* Meeting details */
@@ -169,6 +172,11 @@
 .cw-lbody { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .cw-lbody b { font-weight: 500; color: var(--color-text-highlight); overflow-wrap: anywhere; }
 .cw-lline { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; font-size: 12.5px; color: var(--color-text-subdue); }
+.cw-event.live { box-shadow: 0 0 0 2px var(--color-negative); z-index: 2; }
+.cw-lrow.live { background: color-mix(in srgb, var(--color-negative) 12%, transparent); }
+.cw-lnow { display: flex; align-items: center; gap: 8px; margin: 2px 0; color: var(--color-negative); font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.cw-lnow::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: currentColor; flex: none; }
+.cw-lnow::after { content: ""; flex: 1; height: 2px; background: currentColor; }
 .cw-lline em { font-style: normal; padding: 0 6px; border-radius: 8px; background: var(--color-widget-background-highlight); color: var(--color-text-base); }
 .cw-lline em.warn { background: color-mix(in srgb, var(--ck-warn) 22%, transparent); color: var(--color-text-highlight); }
 .cw-lrow.past { opacity: .5; }

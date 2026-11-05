@@ -313,7 +313,11 @@ function buildWeek(root, data) {
             block.append(name, time, element('span', 'cw-where', event.location && !/^https?:/i.test(event.location) ? event.location : event.calendars.join(', ')));
             column.append(block);
         });
-        if (i === 0) column.append(element('i', 'cw-now'));
+        if (i === 0) {
+            const line = element('i', 'cw-now');
+            line.append(element('span', '', shortClock(new Date())));
+            column.append(line);
+        }
         nodes.push(column);
     });
     grid.style.setProperty('--days', days.length);
@@ -321,6 +325,15 @@ function buildWeek(root, data) {
     grid.dataset.first = first;
     grid.dataset.span = span;
     grid.replaceChildren(...nodes);
+}
+
+// The hour column only fits the digits, so AM and PM go
+const shortClock = (date) => clock(date).replace(/\s*[ap]\.?m\.?$/i, '');
+
+function nowLine(now) {
+    const line = element('div', 'cw-lnow');
+    line.append(element('span', '', `Now ${clock(now)}`));
+    return line;
 }
 
 function buildList(root, data) {
@@ -337,7 +350,10 @@ function buildList(root, data) {
             nodes.push(element('div', 'cw-lfree', 'Nothing booked'));
             return;
         }
-        items.forEach(({ event, start, end, clash }) => {
+        // Today gets a line at the current time, ahead of the first meeting not started yet
+        const nowAt = i === 0 ? items.findIndex(({ start }) => start && start > now) : -2;
+        items.forEach(({ event, start, end, clash }, index) => {
+            if (index === nowAt) nodes.push(nowLine(now));
             const row = opener('button', `cw-lrow cal-c${event.color}${event.holiday ? ' hol' : ''}${end && end < now ? ' past' : ''}`, event);
             const time = element('span', 'cw-ltime', start ? `${clock(start)} - ${clock(end)}` : 'All day');
             const body = element('span', 'cw-lbody');
@@ -355,6 +371,11 @@ function buildList(root, data) {
             nodes.push(row);
         });
     });
+    if (data.timed[0].length && !nodes.some((node) => node.classList.contains('cw-lnow'))) {
+        // Nothing left today, so the line goes after today's last meeting
+        const nextDay = nodes.findIndex((node, index) => index > 0 && node.classList.contains('cw-lday'));
+        nodes.splice(nextDay === -1 ? nodes.length : nextDay, 0, nowLine(now));
+    }
     list.replaceChildren(...nodes);
 }
 
@@ -401,7 +422,11 @@ function paintWeek(root) {
     root.querySelectorAll('.cw-event, .cw-lrow').forEach((node) => {
         const past = node.dataset.calEnd !== '' && new Date(node.dataset.calEnd) < now;
         if (node.classList.contains('past') !== past) node.classList.toggle('past', past);
+        const event = node.dataset.calEvent && JSON.parse(node.dataset.calEvent);
+        const live = !past && !!event?.start && new Date(event.start) <= now;
+        if (node.classList.contains('live') !== live) node.classList.toggle('live', live);
     });
+    root.querySelectorAll('.cw-lnow span').forEach((label) => setText(label, `Now ${clock(now)}`));
     const left = root.querySelector('[data-cal-next-start]');
     if (left) {
         const start = new Date(left.dataset.calNextStart);
@@ -412,6 +437,7 @@ function paintWeek(root) {
     if (line) {
         const top = `${((minutesOf(now) - Number(grid.dataset.first)) / Number(grid.dataset.span)) * 100}%`;
         if (line.style.top !== top) line.style.top = top;
+        setText(line.firstChild, shortClock(now));
     }
 }
 

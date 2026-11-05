@@ -61,7 +61,7 @@ func (widget *calendarWeekWidget) update(ctx context.Context) {
 	widget.renderMu.Unlock()
 	widget.scheduleNextUpdate()
 
-	// The first render after a restart is "Loading…", and nothing else refreshes open tabs
+	// Open tabs redraw only when told, including the first render after a restart
 	if changed {
 		publishEvent("custom-api:data_changed", map[string]any{"widget_id": widget.GetID(), "title": widget.Title})
 	}

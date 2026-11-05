@@ -70,12 +70,12 @@ function paintAgenda(root) {
     const now = new Date();
     const today = dayKey(now);
     const tomorrow = dayKey(addDays(now, 1));
-    let lastDay = null;
-    let any = false;
+    const shownItems = [];
 
     root.querySelectorAll('.ck-ag').forEach((item) => {
         let day;
         let visible;
+        let at = 0;
         const left = item.querySelector('[data-cal-left]');
         if (item.dataset.calDay) {
             day = item.dataset.calDay <= today ? today : item.dataset.calDay;
@@ -84,6 +84,7 @@ function paintAgenda(root) {
         } else {
             const start = new Date(item.dataset.calStart);
             const end = new Date(item.dataset.calEnd);
+            at = start.getTime();
             day = dayKey(start) < today ? today : dayKey(start);
             visible = end > now && day <= tomorrow;
             setText(item.querySelector('[data-cal-time]'), timeRange(start, end, home));
@@ -93,17 +94,24 @@ function paintAgenda(root) {
         }
         visible = visible && item.dataset.calNames.split('|').some(shown);
         setHidden(item, !visible);
-
-        const label = item.querySelector('[data-cal-label]');
-        const first = visible && day !== lastDay;
-        setHidden(label, !first);
-        if (first) {
-            setText(label, day === today ? 'Today' : 'Tomorrow');
-            lastDay = day;
-        }
-        any = any || visible;
+        setHidden(item.querySelector('[data-cal-label]'), true);
+        if (visible) shownItems.push({ item, day, at });
     });
-    setHidden(root.querySelector('[data-cal-empty]'), any);
+
+    // The server sorts by the home zone's days. CSS order puts them in this device's days
+    // without moving nodes, which the next widget update would undo.
+    shownItems.sort((a, b) => a.day.localeCompare(b.day) || a.at - b.at);
+    let lastDay = null;
+    shownItems.forEach(({ item, day }, index) => {
+        const order = String(index + 1);
+        if (item.style.order !== order) item.style.order = order;
+        if (day === lastDay) return;
+        const label = item.querySelector('[data-cal-label]');
+        setHidden(label, false);
+        setText(label, day === today ? 'Today' : 'Tomorrow');
+        lastDay = day;
+    });
+    setHidden(root.querySelector('[data-cal-empty]'), shownItems.length > 0);
 }
 
 const minutesOf = (date) => date.getHours() * 60 + date.getMinutes();
@@ -197,12 +205,10 @@ function buildWeek(root, events, shown) {
         lanes(list);
         list.forEach((item) => {
             const { event } = item;
-            const block = element(event.link ? 'a' : 'div', `cw-event cal-c${event.color}`);
-            if (event.link) {
-                block.href = event.link;
-                block.target = '_blank';
-                block.rel = 'noreferrer';
-            }
+            const block = element('button', `cw-event cal-c${event.color}`);
+            block.type = 'button';
+            block.dataset.calOpen = '';
+            block.dataset.calEvent = JSON.stringify(event);
             block.style.top = `${((item.from - first) / span) * 100}%`;
             block.style.height = `${((item.to - item.from) / span) * 100}%`;
             block.style.left = `${(item.lane / item.lanes) * 100}%`;
@@ -264,6 +270,101 @@ export function paint() {
     document.querySelectorAll('.ck-agenda[data-cal-root]').forEach(paintAgenda);
     document.querySelectorAll('.cw[data-cal-root]').forEach(paintWeek);
 }
+
+// Meeting details, so an invite can be read before its link opens Zoom or Meet
+const LINK_TEXT = /(https?:\/\/[^\s<>"]+[^\s<>".,;:!?)\]])/g;
+
+function linkify(text) {
+    const fragment = document.createDocumentFragment();
+    text.split(LINK_TEXT).forEach((part, i) => {
+        if (i % 2 === 0) {
+            if (part) fragment.append(part);
+            return;
+        }
+        const link = element('a', '', part);
+        link.href = part;
+        link.target = '_blank';
+        link.rel = 'noreferrer';
+        fragment.append(link);
+    });
+    return fragment;
+}
+
+function joinLabel(link) {
+    const host = new URL(link).hostname;
+    if (host.endsWith('meet.google.com')) return 'Join Google Meet';
+    if (host.endsWith('zoom.us')) return 'Join Zoom';
+    if (host.includes('teams.')) return 'Join Teams';
+    if (host.includes('discord')) return 'Open Discord';
+    return `Join on ${host}`;
+}
+
+let dialog = null;
+
+function openDetails(event, home) {
+    if (!dialog) {
+        dialog = element('dialog', 'cal-dialog');
+        dialog.addEventListener('click', (click) => {
+            if (click.target === dialog) dialog.close();
+        });
+        document.body.append(dialog);
+    }
+    const close = element('button', 'cal-dclose', '×');
+    close.type = 'button';
+    close.setAttribute('aria-label', 'Close');
+    close.addEventListener('click', () => dialog.close());
+    const title = element('h3', '', event.name);
+    title.dir = 'auto';
+    const head = element('div', 'cal-dhead');
+    head.append(title, close);
+
+    let when;
+    if (event.day) {
+        const first = new Date(`${event.day}T12:00:00`);
+        const last = addDays(new Date(`${event.endDay}T12:00:00`), -1);
+        const format = (date) => date.toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long' });
+        when = dayKey(first) === dayKey(last) ? `${format(first)}, all day` : `${format(first)} to ${format(last)}`;
+    } else {
+        const start = new Date(event.start);
+        when = `${start.toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long' })}, ${timeRange(start, new Date(event.end), home)}`;
+    }
+    const cals = element('div', `cal-dcals cal-c${event.color}`);
+    cals.append(element('i'), event.calendars.join(', '));
+    const nodes = [head, element('div', 'cal-dwhen', when), cals];
+
+    if (event.location && event.location !== event.link) {
+        const where = element('div', 'cal-dloc');
+        where.append(linkify(event.location));
+        nodes.push(where);
+    }
+    if (event.link) {
+        const join = element('a', 'cal-djoin', joinLabel(event.link));
+        join.href = event.link;
+        join.target = '_blank';
+        join.rel = 'noreferrer';
+        nodes.push(join);
+    }
+    if (event.notes) {
+        const notes = element('div', 'cal-dnotes');
+        notes.dir = 'auto';
+        notes.append(linkify(event.notes));
+        nodes.push(notes);
+    }
+    dialog.replaceChildren(...nodes);
+    if (!dialog.open) dialog.showModal();
+    close.focus();
+}
+
+document.addEventListener('click', (click) => {
+    const opener = click.target.closest('[data-cal-open]');
+    if (!opener) return;
+    const holder = opener.closest('[data-cal-event]');
+    try {
+        openDetails(JSON.parse(holder.dataset.calEvent), opener.closest('[data-cal-root]')?.dataset.calHome);
+    } catch {
+        // A widget update can swap the node mid-click, the next click works
+    }
+});
 
 document.addEventListener('change', (event) => {
     const box = event.target.closest('[data-cal-toggle]');

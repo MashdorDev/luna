@@ -280,6 +280,10 @@ func newApplication(c *config) (*application, error) {
 		updateWidgetIfNeeded := func(w widget, now *time.Time) {
 			// honor each widget's cache duration — update() reschedules
 			// nextUpdate, so without this guard every tick refetches
+			if cockpit, ok := w.(*cockpitWidget); ok && cockpit.calendarChanged() {
+				cockpit.update(app.monitorCtx)
+				return
+			}
 			if !w.requiresUpdate(now) {
 				return
 			}
@@ -289,6 +293,9 @@ func newApplication(c *config) (*application, error) {
 				api.update(app.monitorCtx)
 			} else if cockpit, ok := w.(*cockpitWidget); ok {
 				cockpit.update(app.monitorCtx)
+			} else if week, ok := w.(*calendarWeekWidget); ok {
+				// Open tabs only hear about new meetings when this runs
+				week.update(app.monitorCtx)
 			} else if array, ok := w.(*arrayStatusWidget); ok {
 				array.update(app.monitorCtx)
 			} else if docker, ok := w.(*dockerContainersWidget); ok && docker.ShowFailingOnly {

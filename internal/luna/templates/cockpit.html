@@ -69,15 +69,15 @@
         <section class="ck-agenda" data-cal-root data-cal-home="{{ .Calendar.Zone }}" data-cal-hidden="{{ .Calendar.HiddenJSON }}">
             <div class="ck-cap">Agenda</div>
             {{ range .Agenda }}
-            <div class="ck-ag{{ if .Holiday }} hol{{ end }}" hidden data-cal-names="{{ range $i, $c := .Calendars }}{{ if $i }}|{{ end }}{{ $c }}{{ end }}"{{ if .Day }} data-cal-day="{{ .Day }}" data-cal-end-day="{{ .EndDay }}"{{ else }} data-cal-start="{{ .Start }}" data-cal-end="{{ .End }}"{{ end }}>
+            <div class="ck-ag{{ if .Holiday }} hol{{ end }}" hidden data-cal-event="{{ .JSON }}" data-cal-names="{{ range $i, $c := .Calendars }}{{ if $i }}|{{ end }}{{ $c }}{{ end }}"{{ if .Day }} data-cal-day="{{ .Day }}" data-cal-end-day="{{ .EndDay }}"{{ else }} data-cal-start="{{ .Start }}" data-cal-end="{{ .End }}"{{ end }}>
                 <div class="ck-agday" data-cal-label hidden></div>
-                <div class="ck-agrow">
+                <button type="button" class="ck-agrow" data-cal-open>
                     <i class="cal-c{{ .Color }}"></i>
                     <div>
-                        <div dir="auto" class="ck-agname">{{ if .Link }}<a href="{{ .Link | safeURL }}" target="_blank" rel="noreferrer">{{ .Name }}</a>{{ else }}{{ .Name }}{{ end }}</div>
+                        <div dir="auto" class="ck-agname">{{ .Name }}</div>
                         <div class="ck-sub"><span data-cal-time></span><b data-cal-left></b>{{ if not .Holiday }}<span class="ck-agcal">{{ range $i, $c := .Calendars }}{{ if $i }}, {{ end }}{{ $c }}{{ end }}</span>{{ end }}</div>
                     </div>
-                </div>
+                </button>
             </div>
             {{ end }}
             <div class="ck-agempty" data-cal-empty hidden>Nothing today or tomorrow</div>

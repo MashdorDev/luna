@@ -3,7 +3,9 @@ package luna
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"github.com/tidwall/gjson"
 	"html"
 	"log/slog"
 	"net/http"
@@ -41,6 +43,8 @@ type calendarConfig struct {
 	} `yaml:"reminders"`
 	// Extra zones a meeting's details show its time in
 	Zones []calendarZone `yaml:"zones"`
+	// Lets calendars be added from the page by signing in to Google
+	Connect *calendarConnectConfig `yaml:"connect"`
 }
 
 type calendarZone struct {
@@ -59,6 +63,10 @@ type calendarFeed struct {
 	// Read through the Calendar API instead of an iCal url, for Workspace
 	// accounts whose admin hides the secret iCal address
 	Google *calendarGoogle `yaml:"google"`
+	// Added from the page: which account it came from, and whether it was removed since.
+	// A removed feed keeps its place so the indexes in flight stay valid.
+	connected string
+	removed   bool
 }
 
 type calendarGoogle struct {
@@ -120,6 +128,9 @@ type calendarFeedState struct {
 	tokenExpires time.Time
 	// When each meeting, by uid, was last seen moving
 	moved map[string]time.Time
+	// The signed-in account's email. A feed can read someone else's calendar, where
+	// "self" is that calendar's owner, so only this email counts as Dor's answer.
+	owner string
 }
 
 type calendarHub struct {
@@ -130,6 +141,7 @@ type calendarHub struct {
 	mu      sync.Mutex
 	states  []calendarFeedState
 	version atomic.Int64
+	connect *calendarConnect
 	// Guests' profile pictures by email, from the People API, and when each feed's
 	// account was last listed
 	photos     map[string]string
@@ -147,22 +159,9 @@ func newCalendarHub(c calendarConfig) (*calendarHub, error) {
 		hub.zone = zone
 	}
 	for i := range hub.feeds {
-		feed := &hub.feeds[i]
-		if feed.Name == "" || (feed.URL == "") == (feed.Google == nil) {
-			return nil, fmt.Errorf("calendar feed %d needs a name and either a url or google", i+1)
+		if err := prepareCalendarFeed(&hub.feeds[i], i); err != nil {
+			return nil, err
 		}
-		if g := feed.Google; g != nil {
-			if g.ClientID == "" || g.ClientSecret == "" || g.RefreshToken == "" {
-				return nil, fmt.Errorf("calendar feed %s: google needs client-id, client-secret and refresh-token", feed.Name)
-			}
-			if g.Calendar == "" {
-				g.Calendar = "primary"
-			}
-		}
-		if feed.Every == 0 {
-			feed.Every = durationField(ternary(feed.Holidays, calendarHolidayEvery, calendarMeetingEvery))
-		}
-		feed.URL = calendarFeedURL(feed.URL)
 	}
 	hub.remind = []int{}
 	for _, before := range c.Reminders.Before {
@@ -176,7 +175,111 @@ func newCalendarHub(c calendarConfig) (*calendarHub, error) {
 		hub.zones = append(hub.zones, zone)
 	}
 	hub.states = make([]calendarFeedState, len(hub.feeds))
+	if c.Connect != nil {
+		connect, err := newCalendarConnect(c.Connect)
+		if err != nil {
+			return nil, fmt.Errorf("calendar connect: %v", err)
+		}
+		hub.connect = connect
+		feeds, err := connect.feeds()
+		if err != nil {
+			// A store that cannot be read keeps Luna running on the config's calendars
+			slog.Error("Connected calendars could not be read", "error", err)
+		}
+		hub.addFeeds(feeds)
+	}
 	return hub, nil
+}
+
+func prepareCalendarFeed(feed *calendarFeed, i int) error {
+	if feed.Name == "" || (feed.URL == "") == (feed.Google == nil) {
+		return fmt.Errorf("calendar feed %d needs a name and either a url or google", i+1)
+	}
+	if g := feed.Google; g != nil {
+		if g.ClientID == "" || g.ClientSecret == "" || g.RefreshToken == "" {
+			return fmt.Errorf("calendar feed %s: google needs client-id, client-secret and refresh-token", feed.Name)
+		}
+		if g.Calendar == "" {
+			g.Calendar = "primary"
+		}
+	}
+	if feed.Every == 0 {
+		feed.Every = durationField(ternary(feed.Holidays, calendarHolidayEvery, calendarMeetingEvery))
+	}
+	feed.URL = calendarFeedURL(feed.URL)
+	return nil
+}
+
+// feed is a copy of one feed's settings. The list only grows, under the lock, so a copy
+// read here stays right for that index.
+func (hub *calendarHub) feed(index int) calendarFeed {
+	hub.mu.Lock()
+	defer hub.mu.Unlock()
+	return hub.feeds[index]
+}
+
+func (hub *calendarHub) feedList() []calendarFeed {
+	hub.mu.Lock()
+	defer hub.mu.Unlock()
+	return slices.Clone(hub.feeds)
+}
+
+// addFeeds puts calendars connected from the page on the hub; the next tick fetches them
+func (hub *calendarHub) addFeeds(feeds []calendarFeed) {
+	hub.mu.Lock()
+	defer hub.mu.Unlock()
+	for _, feed := range feeds {
+		if prepareCalendarFeed(&feed, len(hub.feeds)) != nil {
+			continue
+		}
+		hub.feeds = append(hub.feeds, feed)
+		hub.states = append(hub.states, calendarFeedState{})
+	}
+	hub.version.Add(1)
+}
+
+// replaceToken gives an account's running feeds the key from a new sign-in, so a calendar
+// whose old key stopped working recovers without a restart
+func (hub *calendarHub) replaceToken(account, clientID, refresh string) {
+	hub.mu.Lock()
+	defer hub.mu.Unlock()
+	for i := range hub.feeds {
+		feed := &hub.feeds[i]
+		if feed.connected != account || feed.Google == nil || feed.Google.ClientID != clientID {
+			continue
+		}
+		google := *feed.Google
+		google.RefreshToken = refresh
+		feed.Google = &google
+		hub.states[i].token = ""
+		hub.states[i].fetched = time.Time{}
+	}
+}
+
+func (hub *calendarHub) setOwner(index int, email string) {
+	hub.mu.Lock()
+	defer hub.mu.Unlock()
+	hub.states[index].owner = email
+}
+
+func (hub *calendarHub) ownerOf(index int) string {
+	hub.mu.Lock()
+	defer hub.mu.Unlock()
+	return hub.states[index].owner
+}
+
+// removeFeeds takes off the connected feeds for an account's calendar, or its tasks
+func (hub *calendarHub) removeFeeds(account, calendar string, tasks bool) {
+	hub.mu.Lock()
+	defer hub.mu.Unlock()
+	for i := range hub.feeds {
+		feed := &hub.feeds[i]
+		if feed.connected == account && feed.Google != nil && feed.Google.Calendar == calendar && feed.Google.Tasks == tasks {
+			feed.removed = true
+			hub.states[i].events = nil
+		}
+	}
+	hub.version.Add(1)
 }
 
 // glance-ical returns 5 events a year ahead by default, so a busy calendar lost meetings
@@ -215,9 +318,13 @@ func (hub *calendarHub) Version() int64 {
 
 func (hub *calendarHub) tick(now time.Time) {
 	var wg sync.WaitGroup
-	for i := range hub.feeds {
+	feeds := hub.feedList()
+	for i := range feeds {
+		if feeds[i].removed {
+			continue
+		}
 		hub.mu.Lock()
-		due := now.Sub(hub.states[i].fetched) >= time.Duration(hub.feeds[i].Every)
+		due := now.Sub(hub.states[i].fetched) >= time.Duration(feeds[i].Every)
 		if due {
 			// Set before fetching so a slow feed is not started twice
 			hub.states[i].fetched = now
@@ -230,11 +337,14 @@ func (hub *calendarHub) tick(now time.Time) {
 		go func() {
 			defer wg.Done()
 			events, err := hub.fetchFeed(i)
-			if err == nil && hub.feeds[i].Google != nil && !hub.feeds[i].Google.Birthdays {
+			if err == nil && feeds[i].Google != nil && !feeds[i].Google.Birthdays && !feeds[i].Google.Tasks {
 				defer hub.lookupPhotos(i, now)
 			}
 			hub.mu.Lock()
 			defer hub.mu.Unlock()
+			if hub.feeds[i].removed {
+				return
+			}
 			hub.states[i].err = err
 			// A failed fetch keeps the last events, so a Google hiccup does not empty the agenda.
 			// It retries in a minute: glance-ical can still be starting when Luna boots.
@@ -245,8 +355,8 @@ func (hub *calendarHub) tick(now time.Time) {
 				}
 				hub.states[i].events = events
 			} else {
-				hub.states[i].fetched = now.Add(calendarRetry - time.Duration(hub.feeds[i].Every))
-				slog.Error("Calendar feed failed", "calendar", hub.feeds[i].Name, "error", cockpitErrorText(err))
+				hub.states[i].fetched = now.Add(calendarRetry - time.Duration(feeds[i].Every))
+				slog.Error("Calendar feed failed", "calendar", feeds[i].Name, "error", cockpitErrorText(err))
 			}
 		}()
 	}
@@ -373,7 +483,7 @@ type calendarAttendee struct {
 }
 
 func (hub *calendarHub) fetchFeed(index int) ([]calendarEvent, error) {
-	feed := hub.feeds[index]
+	feed := hub.feed(index)
 	var raws []calendarRaw
 	var err error
 	if feed.Google != nil && feed.Google.Tasks {
@@ -470,7 +580,7 @@ func (hub *calendarHub) googleToken(index int, now time.Time) (string, error) {
 	if token != "" && now.Before(expires) {
 		return token, nil
 	}
-	g := hub.feeds[index].Google
+	g := hub.feed(index).Google
 	form := url.Values{
 		"client_id": {g.ClientID}, "client_secret": {g.ClientSecret},
 		"refresh_token": {g.RefreshToken}, "grant_type": {"refresh_token"},
@@ -506,11 +616,12 @@ func (hub *calendarHub) fetchGoogle(index int) ([]calendarRaw, error) {
 		"timeMin": {now.AddDate(0, 0, -calendarLookbackDays).Format(time.RFC3339)},
 		"timeMax": {now.AddDate(0, 0, calendarHorizonDays).Format(time.RFC3339)},
 	}
-	birthdays := hub.feeds[index].Google.Birthdays
+	google := hub.feed(index).Google
+	birthdays := google.Birthdays
 	if birthdays {
 		query.Set("eventTypes", "birthday")
 	}
-	target := calendarGoogleAPI + "/calendars/" + url.PathEscape(hub.feeds[index].Google.Calendar) + "/events?" + query.Encode()
+	target := calendarGoogleAPI + "/calendars/" + url.PathEscape(google.Calendar) + "/events?" + query.Encode()
 	request, err := cockpitRequest("GET", target, map[string]string{"Authorization": "Bearer " + token}, nil)
 	if err != nil {
 		return nil, err
@@ -525,14 +636,38 @@ func (hub *calendarHub) fetchGoogle(index int) ([]calendarRaw, error) {
 	}
 	// Meetings left on "the calendar's default" reminders get those minutes
 	var defaults []int
-	if request, err := cockpitRequest("GET", calendarGoogleAPI+"/users/me/calendarList/"+url.PathEscape(hub.feeds[index].Google.Calendar), map[string]string{"Authorization": "Bearer " + token}, nil); err == nil {
-		if list, err := cockpitFetch(request); err == nil {
-			for _, reminder := range list.Get("defaultReminders").Array() {
-				if reminder.Get("method").String() == "popup" {
-					defaults = append(defaults, int(reminder.Get("minutes").Int()))
-				}
+	listEntry := func(calendar string) (gjson.Result, bool) {
+		request, err := cockpitRequest("GET", calendarGoogleAPI+"/users/me/calendarList/"+url.PathEscape(calendar), map[string]string{"Authorization": "Bearer " + token}, nil)
+		if err != nil {
+			return gjson.Result{}, false
+		}
+		entry, err := cockpitFetch(request)
+		return entry, err == nil
+	}
+	// On the account's own calendar "self" is Dor, including invites sent to an alias
+	primary := google.Calendar == "primary"
+	if entry, ok := listEntry(google.Calendar); ok {
+		for _, reminder := range entry.Get("defaultReminders").Array() {
+			if reminder.Get("method").String() == "popup" {
+				defaults = append(defaults, int(reminder.Get("minutes").Int()))
 			}
 		}
+		if entry.Get("primary").Bool() {
+			primary = true
+			hub.setOwner(index, entry.Get("id").String())
+		}
+	}
+	owner := hub.ownerOf(index)
+	if owner == "" {
+		if entry, ok := listEntry("primary"); ok {
+			owner = entry.Get("id").String()
+			hub.setOwner(index, owner)
+		}
+	}
+	// On someone else's calendar only the account email tells Dor apart, so without it
+	// the fetch fails and the last good events stay, declines still hidden
+	if owner == "" && !primary {
+		return nil, errors.New("could not read which Google account this is")
 	}
 	var raws []calendarRaw
 	for _, item := range data.Get("items").Array() {
@@ -576,8 +711,12 @@ func (hub *calendarHub) fetchGoogle(index int) ([]calendarRaw, error) {
 				Organizer: entry.Get("organizer").Bool(), Optional: entry.Get("optional").Bool(), Self: entry.Get("self").Bool(),
 				Comment: entry.Get("comment").String(),
 			}
-			if attendee.Self {
+			// Dor's own entry: the signed-in account's email, or "self" on Dor's own calendar
+			if (owner != "" && strings.EqualFold(attendee.Email, owner)) || (primary && attendee.Self) {
 				raw.response, account = attendee.Status, attendee.Email
+				attendee.Self = true
+			} else {
+				attendee.Self = false
 			}
 			raw.attendees = append(raw.attendees, attendee)
 		}
@@ -590,8 +729,8 @@ func (hub *calendarHub) fetchGoogle(index int) ([]calendarRaw, error) {
 				Name: item.Get("organizer.displayName").String(), Email: item.Get("organizer.email").String(), Organizer: true,
 			}}
 		}
-		if account == "" && item.Get("organizer.self").Bool() {
-			account = item.Get("organizer.email").String()
+		if account == "" {
+			account = owner
 		}
 		// Google opens the event in whichever account is signed in first unless told which
 		if raw.open != "" && account != "" {
@@ -639,7 +778,10 @@ func (hub *calendarHub) fetchGoogle(index int) ([]calendarRaw, error) {
 func (hub *calendarHub) Events(from, to time.Time) []calendarEvent {
 	hub.mu.Lock()
 	var events []calendarEvent
-	for _, state := range hub.states {
+	for i, state := range hub.states {
+		if hub.feeds[i].removed {
+			continue
+		}
 		for _, event := range state.events {
 			if event.End.After(from) && event.Start.Before(to) {
 				event.Calendars = slices.Clone(event.Calendars)
@@ -764,7 +906,8 @@ func mergeCalendarEvents(events []calendarEvent) []calendarEvent {
 				merged[last].Notes = event.Notes
 			}
 			merged[last].Tentative = merged[last].Tentative && event.Tentative
-			if len(merged[last].Attendees) == 0 {
+			// The copy that carries Dor's answer wins over one from a shared calendar
+			if len(merged[last].Attendees) == 0 || (merged[last].respondID == "" && event.respondID != "") {
 				merged[last].Attendees, merged[last].Response, merged[last].Open = event.Attendees, event.Response, event.Open
 				merged[last].respondID = event.respondID
 			}
@@ -775,6 +918,8 @@ func mergeCalendarEvents(events []calendarEvent) []calendarEvent {
 				merged[last].Dial = event.Dial
 			}
 			merged[last].Recurring = merged[last].Recurring || event.Recurring
+			// Events share their slices with the hub's copy, so append to a clone
+			merged[last].Reminders = slices.Clone(merged[last].Reminders)
 			for _, minutes := range event.Reminders {
 				if !slices.Contains(merged[last].Reminders, minutes) {
 					merged[last].Reminders = append(merged[last].Reminders, minutes)
@@ -795,7 +940,7 @@ func (hub *calendarHub) Errors() []string {
 	defer hub.mu.Unlock()
 	var errs []string
 	for i, state := range hub.states {
-		if state.err != nil {
+		if state.err != nil && !hub.feeds[i].removed {
 			errs = append(errs, fmt.Sprintf("Calendar %s: %s", hub.feeds[i].Name, cockpitErrorText(state.err)))
 		}
 	}
@@ -803,11 +948,20 @@ func (hub *calendarHub) Errors() []string {
 }
 
 func (hub *calendarHub) Calendars() []calendarInfo {
-	infos := make([]calendarInfo, len(hub.feeds))
+	hub.mu.Lock()
+	defer hub.mu.Unlock()
+	var infos []calendarInfo
 	for i, feed := range hub.feeds {
-		infos[i] = calendarInfo{Name: feed.Name, Hidden: feed.Hidden, Holidays: feed.Holidays, Color: i % 8}
+		if !feed.removed {
+			infos = append(infos, calendarInfo{Name: feed.Name, Hidden: feed.Hidden, Holidays: feed.Holidays, Color: i % 8})
+		}
 	}
 	return infos
+}
+
+// CanConnect is whether the page offers to add calendars by signing in to Google
+func (hub *calendarHub) CanConnect() bool {
+	return hub.connect != nil
 }
 
 func (hub *calendarHub) Zone() string {
@@ -817,8 +971,8 @@ func (hub *calendarHub) Zone() string {
 // The calendars a viewer sees switched off until they turn them on, for the page scripts
 func (hub *calendarHub) HiddenJSON() string {
 	names := []string{}
-	for _, feed := range hub.feeds {
-		if feed.Hidden {
+	for _, feed := range hub.feedList() {
+		if feed.Hidden && !feed.removed {
 			names = append(names, feed.Name)
 		}
 	}

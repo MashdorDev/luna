@@ -608,7 +608,11 @@ const ANSWERS = {
 };
 const ANSWER_ORDER = ['accepted', 'tentative', 'needsAction', 'declined'];
 
+// Links come from invites other people write, so only these schemes become links
+const SAFE_LINK = /^(https?:|mailto:|tel:)/i;
+
 function link(className, text, href) {
+    if (!SAFE_LINK.test(href || '')) return element('span', className, text);
     const node = element('a', className, text);
     node.href = href;
     if (/^https?:/i.test(href)) {
@@ -669,7 +673,7 @@ function peopleSection(event) {
 function answerButtons(event, root) {
     const box = element('div', 'cal-danswer');
     const status = element('span', 'cal-dastatus');
-    box.append(element('span', 'cal-dalabel', 'Going?'));
+    box.append(element('span', 'cal-dalabel', event.recurring ? 'Going? (this one only)' : 'Going?'));
     [['accepted', 'Yes'], ['tentative', 'Maybe'], ['declined', 'No']].forEach(([answer, label]) => {
         const button = element('button', `cal-dabtn ${ANSWERS[answer].cls}`, label);
         button.type = 'button';

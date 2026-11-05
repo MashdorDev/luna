@@ -136,6 +136,12 @@ func TestCalendarHubReadsGoogleCalendarAPI(t *testing.T) {
 			}
 			tokens.Add(1)
 			w.Write([]byte(`{"access_token":"access","expires_in":3600}`))
+		case r.URL.Path == "/users/me/calendarList/primary":
+			w.Write([]byte(`{"id":"dor@losttribe.org","primary":true}`))
+		case r.URL.Path == "/users/me/calendarList/fam":
+			w.Write([]byte(`{"id":"fam"}`))
+		case r.URL.Path == "/calendars/fam/events":
+			w.Write([]byte(`{"items":[{"summary":"Theirs","start":{"dateTime":"2026-11-05T15:00:00Z"},"end":{"dateTime":"2026-11-05T16:00:00Z"},"attendees":[{"email":"sam@x.org","self":true,"responseStatus":"declined"},{"email":"pete@x.org","organizer":true}]}]}`))
 		case r.URL.Path == "/calendars/primary/events":
 			if r.Header.Get("Authorization") != "Bearer access" || r.URL.Query().Get("singleEvents") != "true" {
 				http.Error(w, "no", http.StatusUnauthorized)
@@ -148,7 +154,7 @@ func TestCalendarHubReadsGoogleCalendarAPI(t *testing.T) {
 					"attachments":[{"title":"Agenda","fileUrl":"https://docs.google.com/document/d/1","iconLink":"https://icon"}],
 					"conferenceData":{"entryPoints":[{"entryPointType":"video","uri":"https://meet.google.com/abc-defg-hij"},{"entryPointType":"phone","uri":"tel:+1-555-0100","label":"+1 555-0100","pin":"123456"}]}},
 				{"summary":"Offsite","status":"tentative","start":{"date":"2026-11-06"},"end":{"date":"2026-11-07"}},
-				{"summary":"Skipped","start":{"dateTime":"2026-11-05T12:00:00Z"},"end":{"dateTime":"2026-11-05T13:00:00Z"},"attendees":[{"self":true,"responseStatus":"declined"}]},
+				{"summary":"Skipped","start":{"dateTime":"2026-11-05T12:00:00Z"},"end":{"dateTime":"2026-11-05T13:00:00Z"},"attendees":[{"email":"DOR@losttribe.org","self":true,"responseStatus":"declined"}]},
 				{"summary":"Home","eventType":"workingLocation","workingLocationProperties":{"type":"homeOffice"},"start":{"date":"2026-11-05"},"end":{"date":"2026-11-06"}},
 				{"summary":"Focus","eventType":"focusTime","start":{"dateTime":"2026-11-05T14:00:00Z"},"end":{"dateTime":"2026-11-05T16:00:00Z"}},
 				{"summary":"Sam's birthday","eventType":"birthday","start":{"date":"2026-11-06"},"end":{"date":"2026-11-07"}},
@@ -197,7 +203,17 @@ func TestCalendarHubReadsGoogleCalendarAPI(t *testing.T) {
 			t.Fatalf("offsite: %+v", events[1])
 		}
 	}
-	if tokens.Load() != 1 {
+	// "self" on someone else's calendar is that person: their decline does not hide the
+	// meeting, and it is not Dor's to answer
+	shared, err := newCalendarHub(calendarConfig{Feeds: []calendarFeed{{Name: "Family", Google: &calendarGoogle{ClientID: "id", ClientSecret: "secret", RefreshToken: "refresh", Calendar: "fam"}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	theirs, err := shared.fetchFeed(0)
+	if err != nil || len(theirs) != 1 || theirs[0].Response != "" || theirs[0].respondID != "" || theirs[0].Attendees[0].Self {
+		t.Fatalf("someone else's answer taken as Dor's: %+v %v", theirs, err)
+	}
+	if tokens.Load() != 2 {
 		t.Fatalf("access token fetched %d times, want once", tokens.Load())
 	}
 	if _, err := newCalendarHub(calendarConfig{Feeds: []calendarFeed{{Name: "x", Google: &calendarGoogle{ClientID: "id"}}}}); err == nil {

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -123,7 +124,7 @@ func (hub *calendarHub) lookupPhotos(index int, now time.Time) {
 		}
 	}
 	if failures == len(lists) {
-		slog.Warn("Calendar guest photos unavailable, the Google sign-in may lack the contacts scope", "calendar", hub.feeds[index].Name)
+		slog.Warn("Calendar guest photos unavailable, the Google sign-in may lack the contacts scope", "calendar", hub.feed(index).Name)
 	}
 	hub.mu.Lock()
 	changed := false
@@ -216,14 +217,19 @@ var calendarAnswers = map[string]bool{"accepted": true, "tentative": true, "decl
 // respond sets Dor's answer to an invite in Google and in the hub's copy, so the page
 // shows it before the next fetch. Google mails the organizer as it would from Calendar.
 func (hub *calendarHub) respond(index int, eventID, answer string) error {
-	if index < 0 || index >= len(hub.feeds) || hub.feeds[index].Google == nil || eventID == "" || !calendarAnswers[answer] {
+	if index < 0 || index >= len(hub.feedList()) || eventID == "" || !calendarAnswers[answer] {
+		return errors.New("unknown meeting or answer")
+	}
+	feed := hub.feed(index)
+	if feed.Google == nil || feed.removed {
 		return errors.New("unknown meeting or answer")
 	}
 	token, err := hub.googleToken(index, time.Now())
 	if err != nil {
 		return err
 	}
-	target := calendarGoogleAPI + "/calendars/" + url.PathEscape(hub.feeds[index].Google.Calendar) + "/events/" + url.PathEscape(eventID)
+	// Answer on the signed-in account's own copy of the meeting, where "self" is Dor
+	target := calendarGoogleAPI + "/calendars/primary/events/" + url.PathEscape(eventID)
 	headers := map[string]string{"Authorization": "Bearer " + token}
 	request, err := cockpitRequest("GET", target, headers, nil)
 	if err != nil {
@@ -259,28 +265,31 @@ func (hub *calendarHub) respond(index int, eventID, answer string) error {
 
 	hub.mu.Lock()
 	defer hub.mu.Unlock()
-	events := hub.states[index].events
-	for i := range events {
-		if events[i].uid != eventID {
+	// Every feed of the same account holds Dor's answer the same way
+	owner := hub.states[index].owner
+	for f := range hub.states {
+		if f != index && (owner == "" || hub.states[f].owner != owner) {
 			continue
 		}
-		events[i].Response = answer
-		events[i].Attendees = append([]calendarAttendee(nil), events[i].Attendees...)
-		for j := range events[i].Attendees {
-			if events[i].Attendees[j].Self {
-				events[i].Attendees[j].Status = answer
-			}
-		}
-	}
-	// A declined meeting leaves the calendar, as it would on the next fetch
-	if answer == "declined" {
-		kept := events[:0:0]
+		events := slices.Clone(hub.states[f].events)
+		kept := events[:0]
 		for _, event := range events {
-			if event.uid != eventID {
-				kept = append(kept, event)
+			if event.uid == eventID && event.respondID != "" {
+				// A declined meeting leaves the calendar, as it would on the next fetch
+				if answer == "declined" {
+					continue
+				}
+				event.Response = answer
+				event.Attendees = slices.Clone(event.Attendees)
+				for j := range event.Attendees {
+					if event.Attendees[j].Self {
+						event.Attendees[j].Status = answer
+					}
+				}
 			}
+			kept = append(kept, event)
 		}
-		hub.states[index].events = kept
+		hub.states[f].events = kept
 	}
 	hub.version.Add(1)
 	return nil
@@ -298,11 +307,9 @@ func (a *application) handleCalendarRespond(hub *calendarHub) http.HandlerFunc {
 			w.WriteHeader(http.StatusForbidden)
 			return
 		}
-		if origin := r.Header.Get("Origin"); origin != "" {
-			if parsed, err := url.Parse(origin); err != nil || parsed.Host != r.Host {
-				w.WriteHeader(http.StatusForbidden)
-				return
-			}
+		if r.Header.Get("Origin") != "" && !sameOrigin(r) {
+			w.WriteHeader(http.StatusForbidden)
+			return
 		}
 		var body struct {
 			ID     string `json:"id"`

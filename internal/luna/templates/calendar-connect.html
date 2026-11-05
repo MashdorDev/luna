@@ -1,0 +1,99 @@
+{{- template "document.html" . }}
+
+{{- define "document-title" }}Calendars{{ end }}
+
+{{- define "document-head-after" }}
+<style>
+    .cc { max-width: 640px; margin: 0 auto; padding: 32px 16px 64px; }
+    .cc h1 { font-size: 22px; font-weight: 500; color: var(--color-text-highlight); margin: 0 0 4px; }
+    .cc h2 { font-size: 13px; font-weight: 500; color: var(--color-text-subdue); margin: 28px 0 8px; }
+    .cc p { color: var(--color-text-base); margin: 0 0 8px; }
+    .cc small { color: var(--color-text-subdue); }
+    .cc a { color: var(--color-primary); }
+    .cc-box { border: 1px solid var(--color-separator); border-radius: 8px; padding: 12px 14px; margin-bottom: 10px; background: var(--color-widget-background); }
+    .cc-row { display: flex; align-items: center; gap: 10px; padding: 6px 0; }
+    .cc-row + .cc-row { border-top: 1px solid var(--color-separator); }
+    .cc-row > span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+    .cc-btn { padding: 7px 14px; border-radius: 6px; border: 1px solid var(--color-separator); background: none; color: var(--color-text-base); font: inherit; font-size: 13px; cursor: pointer; }
+    .cc-btn:hover { color: var(--color-text-highlight); border-color: var(--color-text-subdue); }
+    .cc-btn.main { background: var(--color-primary); border-color: var(--color-primary); color: var(--color-widget-background); font-weight: 500; }
+    .cc-btn.small { padding: 3px 10px; font-size: 12px; }
+    .cc-apps { display: flex; flex-wrap: wrap; gap: 8px; }
+    .cc-error { border-color: var(--color-negative); color: var(--color-text-highlight); }
+    .cc-pick input[type=text] { flex: 1; min-width: 0; padding: 5px 8px; border: 1px solid var(--color-separator); border-radius: 5px; background: transparent; color: var(--color-text-highlight); font: inherit; font-size: 13px; }
+    .cc-pick label { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--color-text-subdue); white-space: nowrap; }
+    .cc-actions { display: flex; gap: 10px; align-items: center; margin-top: 16px; }
+</style>
+{{- end }}
+
+{{- define "document-body" }}
+<main class="cc">
+    {{ if .Error }}<div class="cc-box cc-error">{{ .Error }}</div>{{ end }}
+
+    {{ if .Picking }}
+    <h1>Pick calendars</h1>
+    <p>From <b>{{ .Picking.Email }}</b>. Each one shows as its own calendar in the legend.</p>
+    <form method="post" action="{{ .ActionURL }}/save">
+        <input type="hidden" name="state" value="{{ .State }}">
+        <div class="cc-box">
+            {{ range $i, $c := .Picking.Calendars }}
+            <div class="cc-row cc-pick">
+                {{ if $c.Added }}
+                <span>{{ $c.Name }} <small>already added</small></span>
+                {{ else }}
+                <input type="checkbox" name="pick-{{ $i }}" aria-label="Add {{ $c.Name }}" {{ if $c.Primary }}checked{{ end }}>
+                <input type="text" name="name-{{ $i }}" value="{{ $c.Name }}" aria-label="Name for {{ $c.Name }}">
+                <label><input type="checkbox" name="remind-{{ $i }}" {{ if $c.Primary }}checked{{ end }}>Reminders</label>
+                {{ end }}
+            </div>
+            {{ end }}
+        </div>
+        <div class="cc-actions">
+            <button class="cc-btn main" type="submit">Add to Luna</button>
+            <a href="{{ .Back }}">Cancel</a>
+        </div>
+    </form>
+    {{ else }}
+    <h1>Calendars</h1>
+    <p><a href="{{ .Back }}">Back to Luna</a></p>
+
+    <h2>Add calendars from Google</h2>
+    <div class="cc-apps">
+        {{ range $i, $app := .Apps }}
+        <form method="post" action="{{ $.ActionURL }}/start">
+            <input type="hidden" name="app" value="{{ $i }}">
+            <input type="hidden" name="back" value="{{ $.Back }}">
+            <button class="cc-btn main" type="submit">{{ $app.Label }}</button>
+        </form>
+        {{ end }}
+    </div>
+    <p><small>Google asks which account, then Luna lists that account's calendars to pick from.</small></p>
+
+    {{ range .Accounts }}
+    {{ $account := .Email }}
+    <h2>{{ .Email }}</h2>
+    <div class="cc-box">
+        {{ range .Calendars }}
+        <div class="cc-row">
+            <span>{{ .Name }}{{ if not .Remind }} <small>no reminders</small>{{ end }}</span>
+            <form method="post" action="{{ $.ActionURL }}/remove">
+                <input type="hidden" name="account" value="{{ $account }}">
+                <input type="hidden" name="calendar" value="{{ .ID }}">
+                <input type="hidden" name="back" value="{{ $.Back }}">
+                <button class="cc-btn small" type="submit">Remove</button>
+            </form>
+        </div>
+        {{ end }}
+    </div>
+    {{ end }}
+
+    {{ if .Config }}
+    <h2>From the config file</h2>
+    <div class="cc-box">
+        {{ range .Config }}<div class="cc-row"><span>{{ . }}</span></div>{{ end }}
+    </div>
+    <p><small>These are set in luna.yml and change there.</small></p>
+    {{ end }}
+    {{ end }}
+</main>
+{{- end }}

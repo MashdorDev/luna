@@ -15,6 +15,7 @@
         {{ range .Calendar.Calendars }}
         <label class="cal-c{{ .Color }}"><input type="checkbox" data-cal-toggle="{{ .Name }}"><i></i>{{ .Name }}</label>
         {{ end }}
+        {{ if .Calendar.CanConnect }}<a class="cw-add" href="api/calendar/connect" title="Sign in to a Google account and pick calendars">+ Add calendar</a>{{ end }}
         <button type="button" class="cal-bell" data-cal-notify hidden></button>
         <span class="cw-zone" data-cal-zone hidden></span>
     </div>

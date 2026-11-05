@@ -269,10 +269,12 @@ function paintWeek(root) {
 export function paint() {
     document.querySelectorAll('.ck-agenda[data-cal-root]').forEach(paintAgenda);
     document.querySelectorAll('.cw[data-cal-root]').forEach(paintWeek);
+    paintBells();
+    tickDialog();
 }
 
 // Meeting details, so an invite can be read before its link opens Zoom or Meet
-const LINK_TEXT = /(https?:\/\/[^\s<>"]+[^\s<>".,;:!?)\]])/g;
+const LINK_TEXT = /(https?:\/\/[^\s<>"]+[^\s<>".,;:!?)\]]|\+\d[\d ().-]{7,}\d)/g;
 
 function linkify(text) {
     const fragment = document.createDocumentFragment();
@@ -282,12 +284,51 @@ function linkify(text) {
             return;
         }
         const link = element('a', '', part);
-        link.href = part;
-        link.target = '_blank';
-        link.rel = 'noreferrer';
+        // Dial-in numbers call straight from a phone
+        const phone = part.startsWith('+');
+        link.href = phone ? `tel:${part.replace(/[^\d+]/g, '')}` : part;
+        if (!phone) {
+            link.target = '_blank';
+            link.rel = 'noreferrer';
+        }
         fragment.append(link);
     });
     return fragment;
+}
+
+function parseList(text) {
+    try {
+        return JSON.parse(text || '[]');
+    } catch {
+        return [];
+    }
+}
+
+function rootEvents(root) {
+    if (!root) return [];
+    if (root.dataset.calEvents) return parseList(root.dataset.calEvents);
+    return [...root.querySelectorAll('[data-cal-event]')].map((node) => parseList(node.dataset.calEvent));
+}
+
+function ago(date) {
+    const minutes = Math.round((Date.now() - date) / 60000);
+    if (minutes < 60) return `${Math.max(1, minutes)} min ago`;
+    if (minutes < 1440) return `${Math.round(minutes / 60)} h ago`;
+    return `${Math.round(minutes / 1440)} days ago`;
+}
+
+function countdown(start, end) {
+    const now = new Date();
+    if (now >= end) return 'Ended';
+    if (now >= start) return `Happening now, ${duration(end - now)} left`;
+    if (start - now < 24 * 60 * 60 * 1000) return `Starts in ${duration(start - now)}`;
+    return `Starts in ${Math.round((start - now) / 86400000)} days`;
+}
+
+function section(label, ...children) {
+    const node = element('div', 'cal-dsec');
+    node.append(element('div', 'cal-dlabel', label), ...children);
+    return node;
 }
 
 function joinLabel(link) {
@@ -301,7 +342,7 @@ function joinLabel(link) {
 
 let dialog = null;
 
-function openDetails(event, home) {
+function openDetails(event, root) {
     if (!dialog) {
         dialog = element('dialog', 'cal-dialog');
         dialog.addEventListener('click', (click) => {
@@ -309,6 +350,7 @@ function openDetails(event, home) {
         });
         document.body.append(dialog);
     }
+    const home = root?.dataset.calHome;
     const close = element('button', 'cal-dclose', '×');
     close.type = 'button';
     close.setAttribute('aria-label', 'Close');
@@ -317,53 +359,204 @@ function openDetails(event, home) {
     title.dir = 'auto';
     const head = element('div', 'cal-dhead');
     head.append(title, close);
+    const nodes = [head];
+    const chips = element('div', 'cal-dchips');
+    if (event.tentative) chips.append(element('span', 'cal-dchip', 'Tentative'));
+    if (event.changed) chips.append(element('span', 'cal-dchip warn', `Invite changed ${ago(new Date(event.changed))}`));
+    if (chips.childNodes.length) nodes.push(chips);
 
-    let when;
+    const longDate = (date) => date.toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long' });
+    let start = null;
+    let end = null;
+    delete dialog.dataset.start;
     if (event.day) {
         const first = new Date(`${event.day}T12:00:00`);
         const last = addDays(new Date(`${event.endDay}T12:00:00`), -1);
-        const format = (date) => date.toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long' });
-        when = dayKey(first) === dayKey(last) ? `${format(first)}, all day` : `${format(first)} to ${format(last)}`;
+        nodes.push(element('div', 'cal-dwhen', dayKey(first) === dayKey(last) ? `${longDate(first)}, all day` : `${longDate(first)} to ${longDate(last)}`));
     } else {
-        const start = new Date(event.start);
-        when = `${start.toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long' })}, ${timeRange(start, new Date(event.end), home)}`;
+        start = new Date(event.start);
+        end = new Date(event.end);
+        nodes.push(element('div', 'cal-dwhen', `${longDate(start)}, ${clock(start)} - ${clock(end)}, ${duration(end - start)}`));
+        const left = element('div', 'cal-dleft', countdown(start, end));
+        left.dataset.calDleft = '';
+        dialog.dataset.start = event.start;
+        dialog.dataset.end = event.end;
+        nodes.push(left);
+
+        // The same meeting in each zone that matters, checked against the device's own clock
+        const zones = [{ zone: home, label: place(home || '') }, ...parseList(root?.dataset.calZones)];
+        const seen = new Set([`${clock(start)}|${dayKey(start)}`]);
+        const rows = element('div', 'cal-dzones');
+        zones.forEach(({ zone, label }) => {
+            if (!zone) return;
+            const day = start.toLocaleDateString('en-CA', { timeZone: zone });
+            const key = `${clock(start, zone)}|${day}`;
+            if (seen.has(key)) return;
+            seen.add(key);
+            const shift = day === dayKey(start) ? '' : day > dayKey(start) ? ', next day' : ', day before';
+            const row = element('span');
+            row.append(element('b', '', label), `${clock(start, zone)} - ${clock(end, zone)}${shift}`);
+            rows.append(row);
+        });
+        if (rows.childNodes.length) nodes.push(rows);
     }
+
     const cals = element('div', `cal-dcals cal-c${event.color}`);
     cals.append(element('i'), event.calendars.join(', '));
-    const nodes = [head, element('div', 'cal-dwhen', when), cals];
+    nodes.push(cals);
 
-    if (event.location && event.location !== event.link) {
-        const where = element('div', 'cal-dloc');
-        where.append(linkify(event.location));
-        nodes.push(where);
-    }
     if (event.link) {
+        const actions = element('div', 'cal-dactions');
         const join = element('a', 'cal-djoin', joinLabel(event.link));
         join.href = event.link;
         join.target = '_blank';
         join.rel = 'noreferrer';
-        nodes.push(join);
+        const copy = element('button', 'cal-dbtn', 'Copy link');
+        copy.type = 'button';
+        copy.addEventListener('click', () => {
+            navigator.clipboard?.writeText(event.link).then(() => { copy.textContent = 'Copied'; }, () => { copy.textContent = 'Copy failed'; });
+        });
+        actions.append(join, copy);
+        nodes.push(actions);
     }
+
+    if (event.location && event.location !== event.link) {
+        const where = element('div');
+        where.append(linkify(event.location));
+        if (!/^https?:/i.test(event.location)) {
+            const map = element('a', 'cal-dmap', 'Map');
+            map.href = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(event.location)}`;
+            map.target = '_blank';
+            map.rel = 'noreferrer';
+            where.append(' ', map);
+        }
+        nodes.push(section('Where', where));
+    }
+
+    if (start) {
+        const shown = root ? shownFor(root) : () => true;
+        const clashes = rootEvents(root).filter((other) => other.start && other.name !== event.name
+            && new Date(other.start) < end && new Date(other.end) > start && other.calendars.some(shown));
+        if (clashes.length) {
+            const list = element('ul', 'cal-dclash');
+            clashes.forEach((other) => list.append(element('li', '', `${other.name}, ${clock(new Date(other.start))} - ${clock(new Date(other.end))}`)));
+            nodes.push(section('Overlaps with', list));
+        }
+        const minutes = parseList(root?.dataset.calRemind);
+        let reminder;
+        if (!minutes.length) reminder = 'No reminders set up';
+        else if (event.quiet) reminder = 'No reminders for this calendar';
+        else if (!('Notification' in window)) reminder = 'This browser cannot show reminders';
+        else if (Notification.permission !== 'granted') reminder = 'Reminders are off in this browser';
+        else reminder = `Reminder ${minutes.join(' and ')} min before`;
+        nodes.push(element('div', 'cal-dremind', reminder));
+    }
+
     if (event.notes) {
         const notes = element('div', 'cal-dnotes');
         notes.dir = 'auto';
         notes.append(linkify(event.notes));
-        nodes.push(notes);
+        nodes.push(section('Notes', notes));
     }
     dialog.replaceChildren(...nodes);
     if (!dialog.open) dialog.showModal();
     close.focus();
 }
 
+function tickDialog() {
+    if (!dialog?.open || !dialog.dataset.start) return;
+    setText(dialog.querySelector('[data-cal-dleft]'), countdown(new Date(dialog.dataset.start), new Date(dialog.dataset.end)));
+}
+
 document.addEventListener('click', (click) => {
     const opener = click.target.closest('[data-cal-open]');
     if (!opener) return;
-    const holder = opener.closest('[data-cal-event]');
     try {
-        openDetails(JSON.parse(holder.dataset.calEvent), opener.closest('[data-cal-root]')?.dataset.calHome);
+        openDetails(JSON.parse(opener.closest('[data-cal-event]').dataset.calEvent), opener.closest('[data-cal-root]'));
     } catch {
         // A widget update can swap the node mid-click, the next click works
     }
+});
+
+// Reminders are browser notifications from whichever Luna tab is open. Tabs share what was
+// already sent through storage, so two open tabs notify once.
+const SENT = 'luna-reminded';
+const LATE = 2 * 60 * 1000;
+
+function sentList() {
+    try {
+        return JSON.parse(localStorage.getItem(SENT)) || {};
+    } catch {
+        return {};
+    }
+}
+
+function remind() {
+    if (!('Notification' in window) || Notification.permission !== 'granted') return;
+    const now = Date.now();
+    const sent = sentList();
+    let changed = false;
+    document.querySelectorAll('[data-cal-root]').forEach((root) => {
+        const shown = shownFor(root);
+        parseList(root.dataset.calRemind).forEach((minutes) => {
+            rootEvents(root).forEach((event) => {
+                if (!event.start || event.quiet || event.holiday || !event.calendars.some(shown)) return;
+                const start = new Date(event.start);
+                const at = start - minutes * 60000;
+                const key = `${event.name}|${event.start}|${minutes}`;
+                if (now < at || now - at > LATE || sent[key]) return;
+                sent[key] = start.getTime();
+                changed = true;
+                const note = new Notification(event.name, {
+                    body: `In ${minutes} min, ${timeRange(start, new Date(event.end), root.dataset.calHome)}\n${event.calendars.join(', ')}`,
+                    tag: key,
+                    requireInteraction: minutes <= 1,
+                });
+                note.onclick = () => {
+                    window.focus();
+                    openDetails(event, root);
+                    note.close();
+                };
+            });
+        });
+    });
+    Object.keys(sent).forEach((key) => {
+        if (now - sent[key] > 24 * 60 * 60 * 1000) {
+            delete sent[key];
+            changed = true;
+        }
+    });
+    if (changed) {
+        try {
+            localStorage.setItem(SENT, JSON.stringify(sent));
+        } catch {
+            // Without storage each tab reminds on its own
+        }
+    }
+}
+
+function paintBells() {
+    document.querySelectorAll('[data-cal-notify]').forEach((bell) => {
+        const root = bell.closest('[data-cal-root]');
+        const minutes = parseList(root?.dataset.calRemind);
+        const supported = 'Notification' in window && minutes.length > 0;
+        setHidden(bell, !supported);
+        if (!supported) return;
+        const state = Notification.permission;
+        setText(bell, state === 'granted' ? 'Reminders on' : state === 'denied' ? 'Reminders blocked' : 'Turn on reminders');
+        const tip = state === 'denied' ? 'Allow notifications for this site in the browser settings'
+            : `${minutes.join(' and ')} min before each meeting, while a Luna tab is open`;
+        if (bell.title !== tip) bell.title = tip;
+        if (bell.classList.contains('on') !== (state === 'granted')) bell.classList.toggle('on', state === 'granted');
+    });
+}
+
+document.addEventListener('click', (click) => {
+    if (!click.target.closest('[data-cal-notify]') || Notification.permission !== 'default') return;
+    Notification.requestPermission().then(() => {
+        paintBells();
+        remind();
+    });
 });
 
 document.addEventListener('change', (event) => {
@@ -378,3 +571,5 @@ window.addEventListener('storage', (event) => {
 });
 paint();
 setInterval(paint, 15000);
+remind();
+setInterval(remind, 20000);

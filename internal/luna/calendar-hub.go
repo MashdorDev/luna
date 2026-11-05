@@ -17,8 +17,8 @@ import (
 )
 
 // The calendar hub reads every feed on its own clock and keeps the next two weeks of events.
-// It runs once per app, outside page views, so reminders go out even when no tab is open.
-// Home and the week widget both read from it.
+// It runs once per app, outside page views, and Home and the week widget both read from it.
+// Reminders are browser notifications sent by calendar-view.js from any open Luna tab.
 
 const (
 	calendarTick         = 30 * time.Second
@@ -26,19 +26,23 @@ const (
 	calendarHolidayEvery = 6 * time.Hour
 	calendarRetry        = time.Minute
 	calendarHorizonDays  = 15
-	// A reminder that comes later than this, after a restart or a late feed, would only confuse
-	calendarRemindLate = 2 * time.Minute
+	// An invite changed this recently is flagged in its details, since a moved meeting is easy to miss
+	calendarChangedWithin = 72 * time.Hour
 )
 
 type calendarConfig struct {
 	Timezone  string         `yaml:"timezone"`
 	Feeds     []calendarFeed `yaml:"feeds"`
 	Reminders struct {
-		URL    string          `yaml:"url"`
-		Topic  string          `yaml:"topic"`
-		Token  string          `yaml:"token"`
 		Before []durationField `yaml:"before"`
 	} `yaml:"reminders"`
+	// Extra zones a meeting's details show its time in
+	Zones []calendarZone `yaml:"zones"`
+}
+
+type calendarZone struct {
+	Timezone string `json:"zone" yaml:"timezone"`
+	Label    string `json:"label" yaml:"label"`
 }
 
 type calendarFeed struct {
@@ -61,6 +65,8 @@ type calendarEvent struct {
 	Link      string
 	Location  string
 	Notes     string
+	Tentative bool
+	Changed   time.Time
 	uid       string
 	remind    bool
 }
@@ -79,25 +85,14 @@ type calendarFeedState struct {
 }
 
 type calendarHub struct {
-	feeds     []calendarFeed
-	zone      *time.Location
-	reminders struct {
-		url, topic, token string
-		before            []time.Duration
-	}
-
+	feeds   []calendarFeed
+	zone    *time.Location
+	remind  []int
+	zones   []calendarZone
 	mu      sync.Mutex
 	states  []calendarFeedState
 	version atomic.Int64
 }
-
-// Reminders already sent. A config reload builds a new hub, so this outlives it.
-var (
-	calendarSentMu sync.Mutex
-	calendarSent   = map[string]time.Time{}
-	// Reminders that came due before this process started were sent by the one before it
-	calendarProcessStart = time.Now()
-)
 
 func newCalendarHub(c calendarConfig) (*calendarHub, error) {
 	hub := &calendarHub{feeds: c.Feeds, zone: time.Local}
@@ -118,18 +113,16 @@ func newCalendarHub(c calendarConfig) (*calendarHub, error) {
 		}
 		feed.URL = calendarFeedURL(feed.URL)
 	}
-	r := c.Reminders
-	if r.URL != "" {
-		if r.Topic == "" {
-			return nil, fmt.Errorf("calendar reminders need a topic")
+	hub.remind = []int{}
+	for _, before := range c.Reminders.Before {
+		hub.remind = append(hub.remind, int(time.Duration(before).Minutes()))
+	}
+	hub.zones = []calendarZone{}
+	for _, zone := range c.Zones {
+		if _, err := time.LoadLocation(zone.Timezone); err != nil {
+			return nil, fmt.Errorf("calendar zone: %v", err)
 		}
-		hub.reminders.url, hub.reminders.topic, hub.reminders.token = strings.TrimRight(r.URL, "/"), r.Topic, r.Token
-		for _, before := range r.Before {
-			hub.reminders.before = append(hub.reminders.before, time.Duration(before))
-		}
-		if len(hub.reminders.before) == 0 {
-			hub.reminders.before = []time.Duration{10 * time.Minute}
-		}
+		hub.zones = append(hub.zones, zone)
 	}
 	hub.states = make([]calendarFeedState, len(hub.feeds))
 	return hub, nil
@@ -151,7 +144,7 @@ func calendarFeedURL(raw string) string {
 }
 
 func (hub *calendarHub) run(ctx context.Context) {
-	hub.tick(ctx, time.Now())
+	hub.tick(time.Now())
 	ticker := time.NewTicker(calendarTick)
 	defer ticker.Stop()
 	for {
@@ -159,7 +152,7 @@ func (hub *calendarHub) run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case now := <-ticker.C:
-			hub.tick(ctx, now)
+			hub.tick(now)
 		}
 	}
 }
@@ -169,7 +162,7 @@ func (hub *calendarHub) Version() int64 {
 	return hub.version.Load()
 }
 
-func (hub *calendarHub) tick(ctx context.Context, now time.Time) {
+func (hub *calendarHub) tick(now time.Time) {
 	var wg sync.WaitGroup
 	for i := range hub.feeds {
 		hub.mu.Lock()
@@ -203,10 +196,6 @@ func (hub *calendarHub) tick(ctx context.Context, now time.Time) {
 		}()
 	}
 	wg.Wait()
-	// A reloaded config has a new hub, and this one must not remind alongside it
-	if ctx.Err() == nil {
-		hub.remind(now)
-	}
 }
 
 var (
@@ -283,6 +272,8 @@ func (hub *calendarHub) fetchFeed(index int) ([]calendarEvent, error) {
 				event.End = event.Start.AddDate(0, 0, 1)
 			}
 		}
+		event.Tentative = strings.EqualFold(entry.Get("status").String(), "TENTATIVE")
+		event.Changed, _ = time.Parse(time.RFC3339, entry.Get("last_modified").String())
 		event.Location = strings.TrimSpace(entry.Get("location").String())
 		event.Notes = calendarPlainText(entry.Get("description").String())
 		event.Link = calendarLinkPattern.FindString(event.Location)
@@ -324,6 +315,9 @@ type calendarEntry struct {
 	Link      string   `json:"link,omitempty"`
 	Location  string   `json:"location,omitempty"`
 	Notes     string   `json:"notes,omitempty"`
+	Quiet     bool     `json:"quiet,omitempty"`
+	Tentative bool     `json:"tentative,omitempty"`
+	Changed   string   `json:"changed,omitempty"`
 	Color     int      `json:"color"`
 }
 
@@ -344,9 +338,13 @@ func (hub *calendarHub) Entries(from, to time.Time) []calendarEntry {
 	for i, event := range events {
 		entries[i] = calendarEntry{
 			Name: event.Name, Calendars: event.Calendars, Holiday: event.Holiday, Link: event.Link, Location: event.Location, Notes: event.Notes, Color: colors[event.Calendars[0]],
+			Quiet: !event.remind || event.Holiday, Tentative: event.Tentative,
 			Start: event.Start.Format(time.RFC3339), End: event.End.Format(time.RFC3339),
 		}
 		order[i] = event.Start
+		if !event.Changed.IsZero() && time.Since(event.Changed) < calendarChangedWithin {
+			entries[i].Changed = event.Changed.Format(time.RFC3339)
+		}
 		if event.AllDay {
 			entries[i].Start, entries[i].End = "", ""
 			entries[i].Day, entries[i].EndDay = event.Start.Format("2006-01-02"), event.End.Format("2006-01-02")
@@ -393,6 +391,10 @@ func mergeCalendarEvents(events []calendarEvent) []calendarEvent {
 			if len(event.Notes) > len(merged[last].Notes) {
 				merged[last].Notes = event.Notes
 			}
+			merged[last].Tentative = merged[last].Tentative && event.Tentative
+			if event.Changed.After(merged[last].Changed) {
+				merged[last].Changed = event.Changed
+			}
 			continue
 		}
 		merged = append(merged, event)
@@ -436,69 +438,13 @@ func (hub *calendarHub) HiddenJSON() string {
 	return string(encoded)
 }
 
-func (hub *calendarHub) remind(now time.Time) {
-	if hub.reminders.url == "" {
-		return
-	}
-	for _, event := range hub.Events(now, now.Add(24*time.Hour)) {
-		if event.AllDay || event.Holiday || !event.remind {
-			continue
-		}
-		for _, before := range hub.reminders.before {
-			at := event.Start.Add(-before)
-			if now.Before(at) || now.Sub(at) > calendarRemindLate || at.Before(calendarProcessStart.Add(-calendarTick)) {
-				continue
-			}
-			key := fmt.Sprintf("%s|%s|%d|%s", event.uid, strings.ToLower(event.Name), event.Start.Unix(), before)
-			calendarSentMu.Lock()
-			_, done := calendarSent[key]
-			if !done {
-				calendarSent[key] = event.Start
-			}
-			calendarSentMu.Unlock()
-			if !done {
-				go hub.notify(event, before)
-			}
-		}
-	}
-	calendarSentMu.Lock()
-	for key, start := range calendarSent {
-		if now.Sub(start) > 24*time.Hour {
-			delete(calendarSent, key)
-		}
-	}
-	calendarSentMu.Unlock()
+// RemindJSON lists the minutes before a meeting that the page notifies at
+func (hub *calendarHub) RemindJSON() string {
+	encoded, _ := json.Marshal(hub.remind)
+	return string(encoded)
 }
 
-func calendarReminderText(event calendarEvent, before time.Duration, zone *time.Location) string {
-	place := zone.String()
-	if slash := strings.LastIndex(place, "/"); slash > -1 {
-		place = strings.ReplaceAll(place[slash+1:], "_", " ")
-	}
-	text := fmt.Sprintf("In %d min, %s to %s %s", int(before.Minutes()), event.Start.In(zone).Format(time.Kitchen), event.End.In(zone).Format(time.Kitchen), place)
-	return text + ". " + strings.Join(event.Calendars, ", ")
-}
-
-func (hub *calendarHub) notify(event calendarEvent, before time.Duration) {
-	message := map[string]any{
-		"topic":    hub.reminders.topic,
-		"title":    event.Name,
-		"message":  calendarReminderText(event, before, hub.zone),
-		"tags":     []string{"calendar"},
-		"priority": ternary(before <= time.Minute, 5, 4),
-	}
-	if event.Link != "" {
-		message["click"] = event.Link
-	}
-	headers := map[string]string{}
-	if hub.reminders.token != "" {
-		headers["Authorization"] = "Bearer " + hub.reminders.token
-	}
-	request, err := cockpitRequest("POST", hub.reminders.url, headers, message)
-	if err == nil {
-		_, err = cockpitFetch(request)
-	}
-	if err != nil {
-		slog.Error("Calendar reminder failed", "event", event.Name, "error", cockpitErrorText(err))
-	}
+func (hub *calendarHub) ZonesJSON() string {
+	encoded, _ := json.Marshal(hub.zones)
+	return string(encoded)
 }

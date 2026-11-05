@@ -119,6 +119,5 @@
 }
 
 .ck-go b { font-weight: 500; }
-.ck-event + .ck-event { margin-top: 8px; }
 
 .ck-daylab[hidden], .ck-daybar[hidden], .ck-zones [hidden] { display: none; }

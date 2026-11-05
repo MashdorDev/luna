@@ -65,10 +65,22 @@
         <div class="ck-daylab" data-ck-daylab hidden><span data-ck-rise></span><span data-ck-set></span></div>
         {{ if .Zones }}<div class="ck-zones">{{ range .Zones }}<span>{{ .Label }}<b data-ck-zone="{{ .Timezone }}"></b></span>{{ end }}</div>{{ end }}
 
-        {{ if .Next }}
-        <section class="ck-next">
-            <div class="ck-cap">Next</div>
-            {{ range .Next }}<div class="ck-event"><div dir="auto">{{ .Name }}</div><div class="ck-sub"><span {{ if .At }}data-ck-at="{{ .At }}"{{ else }}data-ck-day-only="{{ .Date }}"{{ end }}></span>{{ if .Calendar }}, {{ .Calendar }}{{ end }}</div></div>{{ end }}
+        {{ if .Calendar }}
+        <section class="ck-agenda" data-cal-root data-cal-home="{{ .Calendar.Zone }}" data-cal-hidden="{{ .Calendar.HiddenJSON }}">
+            <div class="ck-cap">Agenda</div>
+            {{ range .Agenda }}
+            <div class="ck-ag{{ if .Holiday }} hol{{ end }}" hidden data-cal-names="{{ range $i, $c := .Calendars }}{{ if $i }}|{{ end }}{{ $c }}{{ end }}"{{ if .Day }} data-cal-day="{{ .Day }}" data-cal-end-day="{{ .EndDay }}"{{ else }} data-cal-start="{{ .Start }}" data-cal-end="{{ .End }}"{{ end }}>
+                <div class="ck-agday" data-cal-label hidden></div>
+                <div class="ck-agrow">
+                    <i class="cal-c{{ .Color }}"></i>
+                    <div>
+                        <div dir="auto" class="ck-agname">{{ if .Link }}<a href="{{ .Link | safeURL }}" target="_blank" rel="noreferrer">{{ .Name }}</a>{{ else }}{{ .Name }}{{ end }}</div>
+                        <div class="ck-sub"><span data-cal-time></span><b data-cal-left></b>{{ if not .Holiday }}<span class="ck-agcal">{{ range $i, $c := .Calendars }}{{ if $i }}, {{ end }}{{ $c }}{{ end }}</span>{{ end }}</div>
+                    </div>
+                </div>
+            </div>
+            {{ end }}
+            <div class="ck-agempty" data-cal-empty hidden>Nothing today or tomorrow</div>
         </section>
         {{ end }}
 

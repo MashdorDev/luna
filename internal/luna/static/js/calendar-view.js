@@ -381,7 +381,10 @@ function paintWeek(root) {
     const passed = events.reduce((sum, event) => sum + (new Date(event.start) <= now) + (new Date(event.end) <= now), 0);
     // The hour keeps "Moved 5 min ago" from going stale after the day's last meeting
     const key = [root.dataset.calEvents, dayKey(now), now.getHours(), passed, view, JSON.stringify(choices())].join('#');
-    if (grid.dataset.key !== key || !grid.firstChild) {
+    // Only the shown view is built, so check that one; the empty week grid in list view
+    // otherwise rebuilt the list on every paint, and the observer looped until the tab hung
+    const built = view === 'week' ? grid : root.querySelector('[data-cal-list]');
+    if (grid.dataset.key !== key || !built?.firstChild) {
         const data = weekData(root, events, shown);
         buildSummary(root, data);
         if (view === 'week') buildWeek(root, data);

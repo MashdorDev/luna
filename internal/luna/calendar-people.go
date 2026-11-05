@@ -123,7 +123,7 @@ func (hub *calendarHub) lookupPhotos(index int, now time.Time) {
 		}
 	}
 	if failures == len(lists) {
-		slog.Warn("Calendar guest photos unavailable, the Google sign-in may lack the contacts scope", "calendar", hub.feeds[index].Name)
+		slog.Warn("Calendar guest photos unavailable, the Google sign-in may lack the contacts scope", "calendar", hub.feed(index).Name)
 	}
 	hub.mu.Lock()
 	changed := false
@@ -216,14 +216,18 @@ var calendarAnswers = map[string]bool{"accepted": true, "tentative": true, "decl
 // respond sets Dor's answer to an invite in Google and in the hub's copy, so the page
 // shows it before the next fetch. Google mails the organizer as it would from Calendar.
 func (hub *calendarHub) respond(index int, eventID, answer string) error {
-	if index < 0 || index >= len(hub.feeds) || hub.feeds[index].Google == nil || eventID == "" || !calendarAnswers[answer] {
+	if index < 0 || index >= len(hub.feedList()) || eventID == "" || !calendarAnswers[answer] {
+		return errors.New("unknown meeting or answer")
+	}
+	feed := hub.feed(index)
+	if feed.Google == nil || feed.removed {
 		return errors.New("unknown meeting or answer")
 	}
 	token, err := hub.googleToken(index, time.Now())
 	if err != nil {
 		return err
 	}
-	target := calendarGoogleAPI + "/calendars/" + url.PathEscape(hub.feeds[index].Google.Calendar) + "/events/" + url.PathEscape(eventID)
+	target := calendarGoogleAPI + "/calendars/" + url.PathEscape(feed.Google.Calendar) + "/events/" + url.PathEscape(eventID)
 	headers := map[string]string{"Authorization": "Bearer " + token}
 	request, err := cockpitRequest("GET", target, headers, nil)
 	if err != nil {

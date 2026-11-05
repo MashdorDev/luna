@@ -52,7 +52,7 @@ type application struct {
 // registerWidgetRecursive registers a widget and all its child widgets (if any)
 func (a *application) registerWidgetRecursive(w widget) {
 	a.widgetByID[w.GetID()] = w
-	
+
 	// If this widget is a container (group or split-column), register its children too
 	switch cw := w.(type) {
 	case *groupWidget:
@@ -717,6 +717,13 @@ func (a *application) server() (func() error, func() error) {
 	// new Notification(). It sits at the root so its scope covers every page.
 	if a.calendar != nil {
 		mux.HandleFunc("POST /api/calendar/respond", a.handleCalendarRespond(a.calendar))
+		if a.calendar.connect != nil {
+			mux.HandleFunc("GET /api/calendar/connect", a.handleCalendarConnect)
+			mux.HandleFunc("POST /api/calendar/connect/start", a.handleCalendarConnectStart)
+			mux.HandleFunc("GET /api/calendar/connect/callback", a.handleCalendarConnectCallback)
+			mux.HandleFunc("POST /api/calendar/connect/save", a.handleCalendarConnectSave)
+			mux.HandleFunc("POST /api/calendar/connect/remove", a.handleCalendarConnectRemove)
+		}
 	}
 	mux.HandleFunc("GET /calendar-sw.js", func(w http.ResponseWriter, r *http.Request) {
 		script, err := fs.ReadFile(staticFS, "js/calendar-sw.js")

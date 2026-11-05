@@ -46,6 +46,7 @@ type application struct {
 	failedAuthAttempts     map[string]*failedAuthAttempt
 	monitorCtx             context.Context
 	monitorCancel          context.CancelFunc
+	calendar               *calendarHub
 }
 
 // registerWidgetRecursive registers a widget and all its child widgets (if any)
@@ -190,6 +191,7 @@ func newApplication(c *config) (*application, error) {
 			return nil, err
 		}
 		providers.calendar = hub
+		app.calendar = hub
 	}
 
 	for p := range config.Pages {
@@ -713,6 +715,9 @@ func (a *application) server() (func() error, func() error) {
 
 	// Calendar reminders go through a service worker, since Android Chrome refuses
 	// new Notification(). It sits at the root so its scope covers every page.
+	if a.calendar != nil {
+		mux.HandleFunc("POST /api/calendar/respond", a.handleCalendarRespond(a.calendar))
+	}
 	mux.HandleFunc("GET /calendar-sw.js", func(w http.ResponseWriter, r *http.Request) {
 		script, err := fs.ReadFile(staticFS, "js/calendar-sw.js")
 		if err != nil {

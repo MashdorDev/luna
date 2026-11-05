@@ -90,6 +90,8 @@ type calendarEvent struct {
 	Recurring bool
 	// Minutes before the start that Dor set on this meeting in Google, on top of the usual ones
 	Reminders []int
+	// feed index and Google event id, for answering the invite from Luna
+	respondID string
 	// When the hub saw this meeting move to a new time. The feeds' own last-modified
 	// stamps change on every RSVP, so they cannot tell a move from an answer.
 	Changed time.Time
@@ -123,6 +125,8 @@ type calendarHub struct {
 	mu      sync.Mutex
 	states  []calendarFeedState
 	version atomic.Int64
+	// Guests' profile pictures by email, from the People API
+	photos map[string]calendarPhoto
 }
 
 func newCalendarHub(c calendarConfig) (*calendarHub, error) {
@@ -218,6 +222,9 @@ func (hub *calendarHub) tick(now time.Time) {
 		go func() {
 			defer wg.Done()
 			events, err := hub.fetchFeed(i)
+			if err == nil && hub.feeds[i].Google != nil && !hub.feeds[i].Google.Birthdays {
+				defer hub.lookupPhotos(i, events, now)
+			}
 			hub.mu.Lock()
 			defer hub.mu.Unlock()
 			hub.states[i].err = err
@@ -352,6 +359,7 @@ type calendarAttendee struct {
 	Self      bool   `json:"self,omitempty"`
 	// What they wrote with their answer
 	Comment string `json:"comment,omitempty"`
+	Photo   string `json:"photo,omitempty"`
 }
 
 func (hub *calendarHub) fetchFeed(index int) ([]calendarEvent, error) {
@@ -394,6 +402,9 @@ func (hub *calendarHub) fetchFeed(index int) ([]calendarEvent, error) {
 		event.Link = raw.link
 		event.Attendees, event.Response, event.Open = raw.attendees, raw.response, raw.open
 		event.Files, event.Dial, event.Recurring, event.Reminders = raw.files, raw.dial, raw.recurring, raw.reminders
+		if raw.response != "" {
+			event.respondID = fmt.Sprintf("%d:%s", index, raw.uid)
+		}
 		if event.Link == "" {
 			event.Link = calendarLinkPattern.FindString(event.Location)
 		}
@@ -611,6 +622,7 @@ type calendarEntry struct {
 	Open      string             `json:"open,omitempty"`
 	Files     []calendarFile     `json:"files,omitempty"`
 	Reminders []int              `json:"reminders,omitempty"`
+	Respond   string             `json:"respond,omitempty"`
 	Dial      *calendarDial      `json:"dial,omitempty"`
 	Recurring bool               `json:"recurring,omitempty"`
 	Color     int                `json:"color"`
@@ -635,8 +647,15 @@ func (hub *calendarHub) Entries(from, to time.Time) []calendarEntry {
 			Name: event.Name, Calendars: event.Calendars, Holiday: event.Holiday, Link: event.Link, Location: event.Location, Notes: event.Notes, Color: colors[event.Calendars[0]],
 			Quiet: !event.remind || event.Holiday, Tentative: event.Tentative,
 			Attendees: event.Attendees, Response: event.Response, Open: event.Open,
-			Files: event.Files, Dial: event.Dial, Recurring: event.Recurring, Reminders: event.Reminders,
+			Files: event.Files, Dial: event.Dial, Recurring: event.Recurring, Reminders: event.Reminders, Respond: event.respondID,
 			Start: event.Start.Format(time.RFC3339), End: event.End.Format(time.RFC3339),
+		}
+		if len(event.Attendees) > 0 {
+			entries[i].Attendees = make([]calendarAttendee, len(event.Attendees))
+			for j, attendee := range event.Attendees {
+				attendee.Photo = hub.photoFor(attendee.Email)
+				entries[i].Attendees[j] = attendee
+			}
 		}
 		order[i] = event.Start
 		if !event.Changed.IsZero() && time.Since(event.Changed) < calendarChangedWithin {
@@ -691,6 +710,7 @@ func mergeCalendarEvents(events []calendarEvent) []calendarEvent {
 			merged[last].Tentative = merged[last].Tentative && event.Tentative
 			if len(merged[last].Attendees) == 0 {
 				merged[last].Attendees, merged[last].Response, merged[last].Open = event.Attendees, event.Response, event.Open
+				merged[last].respondID = event.respondID
 			}
 			if len(merged[last].Files) == 0 {
 				merged[last].Files = event.Files

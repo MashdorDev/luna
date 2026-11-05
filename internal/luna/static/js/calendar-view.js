@@ -573,7 +573,12 @@ function section(label, ...children) {
 }
 
 function joinLabel(link) {
-    const host = new URL(link).hostname;
+    let host = '';
+    try {
+        host = new URL(link).hostname;
+    } catch {
+        return 'Join';
+    }
     if (host.endsWith('meet.google.com')) return 'Join Google Meet';
     if (host.endsWith('zoom.us')) return 'Join Zoom';
     if (host.includes('teams.')) return 'Join Teams';
@@ -613,7 +618,17 @@ function peopleSection(event) {
         const answer = ANSWERS[answerOf(person)] || ANSWERS.needsAction;
         const row = element('li');
         const name = person.name || (person.email || '?').split('@')[0];
-        row.append(element('span', `cal-dav ${answer.cls}`, name.slice(0, 1).toUpperCase()));
+        const avatar = element('span', `cal-dav ${answer.cls}`, name.slice(0, 1).toUpperCase());
+        if (person.photo) {
+            const photo = element('img');
+            photo.src = person.photo;
+            photo.alt = '';
+            photo.referrerPolicy = 'no-referrer';
+            // A picture that fails to load leaves the letter
+            photo.addEventListener('error', () => photo.remove());
+            avatar.append(photo);
+        }
+        row.append(avatar);
         const who = element('span', 'cal-dwho');
         const top = element('span', 'cal-dname');
         top.append(element('b', '', person.self ? `${name} (you)` : name));
@@ -634,6 +649,45 @@ function peopleSection(event) {
     const node = element('div', 'cal-dsec');
     node.append(label, list);
     return node;
+}
+
+// Going, Maybe and No buttons that answer the invite in Google for Dor
+function answerButtons(event, root) {
+    const box = element('div', 'cal-danswer');
+    const status = element('span', 'cal-dastatus');
+    box.append(element('span', 'cal-dalabel', 'Going?'));
+    [['accepted', 'Yes'], ['tentative', 'Maybe'], ['declined', 'No']].forEach(([answer, label]) => {
+        const button = element('button', `cal-dabtn ${ANSWERS[answer].cls}`, label);
+        button.type = 'button';
+        button.setAttribute('aria-pressed', String(event.response === answer));
+        button.addEventListener('click', async () => {
+            if (event.response === answer) return;
+            box.querySelectorAll('button').forEach((other) => { other.disabled = true; });
+            status.textContent = 'Saving...';
+            try {
+                const response = await fetch(`${BASE}/api/calendar/respond`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'X-Luna-Calendar': '1' },
+                    body: JSON.stringify({ id: event.respond, answer }),
+                });
+                if (!response.ok) throw new Error((await response.text()).trim() || `HTTP ${response.status}`);
+                event.response = answer;
+                (event.attendees || []).forEach((person) => { if (person.self) person.status = answer; });
+                openDetails(event, root);
+                if (answer === 'declined') {
+                    setText(dialog.querySelector('.cal-dastatus'), 'Declined. Google told the organizer, and it leaves Luna on the next refresh.');
+                } else {
+                    setText(dialog.querySelector('.cal-dastatus'), 'Saved. Google told the organizer.');
+                }
+            } catch (error) {
+                status.textContent = `Could not save: ${error.message}`;
+                box.querySelectorAll('button').forEach((other) => { other.disabled = false; });
+            }
+        });
+        box.append(button);
+    });
+    box.append(status);
+    return box;
 }
 
 let dialog = null;
@@ -707,18 +761,19 @@ function openDetails(event, root) {
 
     if (event.link || event.open) {
         const actions = element('div', 'cal-dactions');
-        const join = element('a', 'cal-djoin', joinLabel(event.link));
-        join.href = event.link;
-        join.target = '_blank';
-        join.rel = 'noreferrer';
-        const copy = element('button', 'cal-dbtn', 'Copy link');
-        copy.type = 'button';
-        copy.addEventListener('click', () => {
-            navigator.clipboard?.writeText(event.link).then(() => { copy.textContent = 'Copied'; }, () => { copy.textContent = 'Copy failed'; });
-        });
-        if (event.link) actions.append(join, copy);
-        // Answering goes through Google, where the invite lives; Luna only reads calendars
-        if (event.open) actions.append(link('cal-dbtn', event.response ? 'Change answer in Google' : 'Open in Google Calendar', event.open));
+        if (event.link) {
+            const join = element('a', 'cal-djoin', joinLabel(event.link));
+            join.href = event.link;
+            join.target = '_blank';
+            join.rel = 'noreferrer';
+            const copy = element('button', 'cal-dbtn', 'Copy link');
+            copy.type = 'button';
+            copy.addEventListener('click', () => {
+                navigator.clipboard?.writeText(event.link).then(() => { copy.textContent = 'Copied'; }, () => { copy.textContent = 'Copy failed'; });
+            });
+            actions.append(join, copy);
+        }
+        if (event.open) actions.append(link('cal-dbtn', 'Open in Google Calendar', event.open));
         nodes.push(actions);
         if (event.dial) {
             const dial = element('div', 'cal-ddial');
@@ -740,6 +795,7 @@ function openDetails(event, root) {
         nodes.push(section('Where', where));
     }
 
+    if (event.respond && start && end > new Date()) nodes.push(answerButtons(event, root));
     if (event.attendees?.length) nodes.push(peopleSection(event));
     if (event.files?.length) {
         const files = element('ul', 'cal-dfiles');
@@ -802,8 +858,9 @@ document.addEventListener('click', (click) => {
     if (!opener) return;
     try {
         openDetails(JSON.parse(opener.closest('[data-cal-event]').dataset.calEvent), opener.closest('[data-cal-root]'));
-    } catch {
+    } catch (error) {
         // A widget update can swap the node mid-click, the next click works
+        console.error('Calendar details failed', error);
     }
 });
 

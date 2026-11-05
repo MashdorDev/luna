@@ -36,7 +36,7 @@ func TestCalendarRespondChangesOnlyDorsAnswer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	hub.states[0].events = []calendarEvent{{Name: "Weekly", uid: "ev1", Response: "needsAction", Attendees: []calendarAttendee{{Email: "dor@x.org", Self: true, Status: "needsAction"}}}}
+	hub.states[0].events = []calendarEvent{{Name: "Weekly", uid: "ev1", respondID: "0:ev1", Response: "needsAction", Attendees: []calendarAttendee{{Email: "dor@x.org", Self: true, Status: "needsAction"}}}}
 
 	app := &application{}
 	handler := app.handleCalendarRespond(hub)

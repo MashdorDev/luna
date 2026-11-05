@@ -17,6 +17,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -264,11 +265,13 @@ func sameOrigin(r *http.Request) bool {
 }
 
 // backPath keeps the return address on this Luna, as a path
+// Luna's own page paths are only these characters. Anything else, such as a backslash or a
+// tab that browsers drop, could turn the path into another site's address.
+var calendarBackPattern = regexp.MustCompile(`^/[A-Za-z0-9._~/-]*$`)
+
 func (a *application) backPath(raw string) string {
 	parsed, err := url.Parse(raw)
-	// A backslash reads as a slash to browsers, so /\evil.com would leave Luna
-	if err != nil || parsed.Path == "" || !strings.HasPrefix(parsed.Path, "/") || strings.HasPrefix(parsed.Path, "//") ||
-		strings.Contains(parsed.Path, "\\") || strings.Contains(raw, "\\") || strings.Contains(strings.ToLower(raw), "%5c") {
+	if err != nil || !calendarBackPattern.MatchString(parsed.Path) || strings.HasPrefix(parsed.Path, "//") {
 		return a.Config.Server.BaseURL + "/"
 	}
 	return parsed.Path

@@ -96,8 +96,14 @@ func TestCalendarConnectFlowAddsAndRemovesCalendars(t *testing.T) {
 		return recorder
 	}
 
-	if got := app.backPath("/%5Cevil.com"); got != "/" {
-		t.Fatalf("back path %q leaves Luna", got)
+	for _, bad := range []string{"/%5Cevil.com", "/%09/evil.com", "/%2509/evil.com", "//evil.com"} {
+		if got := app.backPath(bad); got != "/" {
+			t.Fatalf("back path %q became %q", bad, got)
+		}
+	}
+	// A full address (the Referer) keeps only its path, on Luna
+	if got := app.backPath("https://elsewhere.test/calendar"); got != "/calendar" {
+		t.Fatalf("own page refused: %q", got)
 	}
 	if code := do("POST", "http://luna.test/api/calendar/connect/start", url.Values{"app": {"0"}}, nil, "https://evil.test").Code; code != http.StatusForbidden {
 		t.Fatalf("start from another site: %d", code)

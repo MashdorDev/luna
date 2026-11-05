@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -264,28 +265,31 @@ func (hub *calendarHub) respond(index int, eventID, answer string) error {
 
 	hub.mu.Lock()
 	defer hub.mu.Unlock()
-	events := hub.states[index].events
-	for i := range events {
-		if events[i].uid != eventID {
+	// Every feed of the same account holds Dor's answer the same way
+	owner := hub.states[index].owner
+	for f := range hub.states {
+		if f != index && (owner == "" || hub.states[f].owner != owner) {
 			continue
 		}
-		events[i].Response = answer
-		events[i].Attendees = append([]calendarAttendee(nil), events[i].Attendees...)
-		for j := range events[i].Attendees {
-			if events[i].Attendees[j].Self {
-				events[i].Attendees[j].Status = answer
-			}
-		}
-	}
-	// A declined meeting leaves the calendar, as it would on the next fetch
-	if answer == "declined" {
-		kept := events[:0:0]
+		events := slices.Clone(hub.states[f].events)
+		kept := events[:0]
 		for _, event := range events {
-			if event.uid != eventID {
-				kept = append(kept, event)
+			if event.uid == eventID && event.respondID != "" {
+				// A declined meeting leaves the calendar, as it would on the next fetch
+				if answer == "declined" {
+					continue
+				}
+				event.Response = answer
+				event.Attendees = slices.Clone(event.Attendees)
+				for j := range event.Attendees {
+					if event.Attendees[j].Self {
+						event.Attendees[j].Status = answer
+					}
+				}
 			}
+			kept = append(kept, event)
 		}
-		hub.states[index].events = kept
+		hub.states[f].events = kept
 	}
 	hub.version.Add(1)
 	return nil

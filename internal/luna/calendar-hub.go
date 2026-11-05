@@ -3,6 +3,7 @@ package luna
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/tidwall/gjson"
 	"html"
@@ -643,6 +644,8 @@ func (hub *calendarHub) fetchGoogle(index int) ([]calendarRaw, error) {
 		entry, err := cockpitFetch(request)
 		return entry, err == nil
 	}
+	// On the account's own calendar "self" is Dor, including invites sent to an alias
+	primary := google.Calendar == "primary"
 	if entry, ok := listEntry(google.Calendar); ok {
 		for _, reminder := range entry.Get("defaultReminders").Array() {
 			if reminder.Get("method").String() == "popup" {
@@ -650,6 +653,7 @@ func (hub *calendarHub) fetchGoogle(index int) ([]calendarRaw, error) {
 			}
 		}
 		if entry.Get("primary").Bool() {
+			primary = true
 			hub.setOwner(index, entry.Get("id").String())
 		}
 	}
@@ -659,6 +663,11 @@ func (hub *calendarHub) fetchGoogle(index int) ([]calendarRaw, error) {
 			owner = entry.Get("id").String()
 			hub.setOwner(index, owner)
 		}
+	}
+	// On someone else's calendar only the account email tells Dor apart, so without it
+	// the fetch fails and the last good events stay, declines still hidden
+	if owner == "" && !primary {
+		return nil, errors.New("could not read which Google account this is")
 	}
 	var raws []calendarRaw
 	for _, item := range data.Get("items").Array() {
@@ -702,8 +711,8 @@ func (hub *calendarHub) fetchGoogle(index int) ([]calendarRaw, error) {
 				Organizer: entry.Get("organizer").Bool(), Optional: entry.Get("optional").Bool(), Self: entry.Get("self").Bool(),
 				Comment: entry.Get("comment").String(),
 			}
-			// Dor's own entry, by the signed-in account's email, not by "self"
-			if owner != "" && strings.EqualFold(attendee.Email, owner) {
+			// Dor's own entry: the signed-in account's email, or "self" on Dor's own calendar
+			if (owner != "" && strings.EqualFold(attendee.Email, owner)) || (primary && attendee.Self) {
 				raw.response, account = attendee.Status, attendee.Email
 				attendee.Self = true
 			} else {
@@ -897,7 +906,8 @@ func mergeCalendarEvents(events []calendarEvent) []calendarEvent {
 				merged[last].Notes = event.Notes
 			}
 			merged[last].Tentative = merged[last].Tentative && event.Tentative
-			if len(merged[last].Attendees) == 0 {
+			// The copy that carries Dor's answer wins over one from a shared calendar
+			if len(merged[last].Attendees) == 0 || (merged[last].respondID == "" && event.respondID != "") {
 				merged[last].Attendees, merged[last].Response, merged[last].Open = event.Attendees, event.Response, event.Open
 				merged[last].respondID = event.respondID
 			}

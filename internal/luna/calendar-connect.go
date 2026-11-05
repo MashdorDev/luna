@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -71,6 +72,8 @@ type calendarConnect struct {
 	key     []byte
 	mu      sync.Mutex
 	pending map[string]*calendarPending
+	// Held across load, change and save of the store
+	storeMu sync.Mutex
 }
 
 // A sign-in between Google's answer and Dor picking calendars
@@ -187,11 +190,20 @@ func (connect *calendarConnect) save(store calendarStore) error {
 	if err := os.MkdirAll(filepath.Dir(connect.config.Store), 0o700); err != nil {
 		return err
 	}
-	temporary := connect.config.Store + ".tmp"
-	if err := os.WriteFile(temporary, sealed, 0o600); err != nil {
+	file, err := os.CreateTemp(filepath.Dir(connect.config.Store), ".calendar-accounts-*")
+	if err != nil {
 		return err
 	}
-	return os.Rename(temporary, connect.config.Store)
+	if _, err := file.Write(sealed); err != nil {
+		file.Close()
+		os.Remove(file.Name())
+		return err
+	}
+	if err := file.Close(); err != nil {
+		os.Remove(file.Name())
+		return err
+	}
+	return os.Rename(file.Name(), connect.config.Store)
 }
 
 // feeds turns the stored accounts into hub feeds
@@ -233,20 +245,30 @@ func randomToken() string {
 	return base64.RawURLEncoding.EncodeToString(raw)
 }
 
-// sameOrigin keeps another site from posting these forms through Dor's browser
+// sameOrigin keeps another site from posting these forms through Dor's browser. Hosts are
+// compared without the port, since nginx passes $host, which drops it.
 func sameOrigin(r *http.Request) bool {
 	origin := r.Header.Get("Origin")
 	if origin == "" {
 		origin = r.Header.Get("Referer")
 	}
 	parsed, err := url.Parse(origin)
-	return err == nil && parsed.Host == r.Host
+	if err != nil || parsed.Hostname() == "" {
+		return false
+	}
+	host := r.Host
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	return strings.EqualFold(parsed.Hostname(), host)
 }
 
 // backPath keeps the return address on this Luna, as a path
 func (a *application) backPath(raw string) string {
 	parsed, err := url.Parse(raw)
-	if err != nil || parsed.Path == "" || !strings.HasPrefix(parsed.Path, "/") || strings.HasPrefix(parsed.Path, "//") {
+	// A backslash reads as a slash to browsers, so /\evil.com would leave Luna
+	if err != nil || parsed.Path == "" || !strings.HasPrefix(parsed.Path, "/") || strings.HasPrefix(parsed.Path, "//") ||
+		strings.Contains(parsed.Path, "\\") || strings.Contains(raw, "\\") || strings.Contains(strings.ToLower(raw), "%5c") {
 		return a.Config.Server.BaseURL + "/"
 	}
 	return parsed.Path
@@ -313,6 +335,11 @@ func (a *application) handleCalendarConnectStart(w http.ResponseWriter, r *http.
 		return
 	}
 	connect := a.calendar.connect
+	// Google sends the sign-in back to the registered address, and the cookie lives on this one
+	if redirect, err := url.Parse(connect.config.Redirect); err == nil && !strings.EqualFold(redirect.Hostname(), strings.Split(r.Host, ":")[0]) {
+		a.calendarConnectList(w, r, a.backPath(r.FormValue("back")), "Open Luna at "+redirect.Host+" to add calendars; Google returns the sign-in there.")
+		return
+	}
 	index, err := strconv.Atoi(r.FormValue("app"))
 	if err != nil || index < 0 || index >= len(connect.config.Apps) {
 		http.Error(w, "unknown app", http.StatusBadRequest)
@@ -451,11 +478,22 @@ func (a *application) handleCalendarConnectSave(w http.ResponseWriter, r *http.R
 	connect := hub.connect
 	state := r.FormValue("state")
 	pending, ok := connect.pendingFor(r, state)
+	if ok {
+		// Claimed now, so a double click cannot save it twice
+		connect.mu.Lock()
+		if connect.pending[state] != pending {
+			ok = false
+		}
+		delete(connect.pending, state)
+		connect.mu.Unlock()
+	}
 	if !ok || pending.refresh == "" {
-		a.calendarConnectList(w, r, a.Config.Server.BaseURL+"/", "That sign-in expired. Start again.")
+		a.calendarConnectList(w, r, a.Config.Server.BaseURL+"/", "That sign-in expired or was already saved. Start again.")
 		return
 	}
 	app := connect.config.Apps[pending.app]
+	connect.storeMu.Lock()
+	defer connect.storeMu.Unlock()
 	taken := map[string]bool{}
 	for _, info := range hub.Calendars() {
 		taken[strings.ToLower(info.Name)] = true
@@ -499,10 +537,8 @@ func (a *application) handleCalendarConnectSave(w http.ResponseWriter, r *http.R
 	for _, stored := range picked {
 		feeds = append(feeds, calendarConnectFeed(app, *account, stored))
 	}
+	hub.replaceToken(account.Email, app.ClientID, account.Refresh)
 	hub.addFeeds(feeds)
-	connect.mu.Lock()
-	delete(connect.pending, state)
-	connect.mu.Unlock()
 	http.SetCookie(w, &http.Cookie{Name: calendarConnectCookie, Path: a.Config.Server.BaseURL + "/api/calendar/connect", MaxAge: -1})
 	http.Redirect(w, r, pending.back, http.StatusSeeOther)
 }
@@ -514,6 +550,8 @@ func (a *application) handleCalendarConnectRemove(w http.ResponseWriter, r *http
 	}
 	hub := a.calendar
 	email, id, back := r.FormValue("account"), r.FormValue("calendar"), a.backPath(r.FormValue("back"))
+	hub.connect.storeMu.Lock()
+	defer hub.connect.storeMu.Unlock()
 	store, err := hub.connect.load()
 	if err != nil {
 		a.calendarConnectList(w, r, back, "The saved accounts could not be read: "+err.Error())

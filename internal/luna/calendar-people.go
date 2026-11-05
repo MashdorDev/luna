@@ -227,7 +227,8 @@ func (hub *calendarHub) respond(index int, eventID, answer string) error {
 	if err != nil {
 		return err
 	}
-	target := calendarGoogleAPI + "/calendars/" + url.PathEscape(feed.Google.Calendar) + "/events/" + url.PathEscape(eventID)
+	// Answer on the signed-in account's own copy of the meeting, where "self" is Dor
+	target := calendarGoogleAPI + "/calendars/primary/events/" + url.PathEscape(eventID)
 	headers := map[string]string{"Authorization": "Bearer " + token}
 	request, err := cockpitRequest("GET", target, headers, nil)
 	if err != nil {
@@ -302,11 +303,9 @@ func (a *application) handleCalendarRespond(hub *calendarHub) http.HandlerFunc {
 			w.WriteHeader(http.StatusForbidden)
 			return
 		}
-		if origin := r.Header.Get("Origin"); origin != "" {
-			if parsed, err := url.Parse(origin); err != nil || parsed.Host != r.Host {
-				w.WriteHeader(http.StatusForbidden)
-				return
-			}
+		if r.Header.Get("Origin") != "" && !sameOrigin(r) {
+			w.WriteHeader(http.StatusForbidden)
+			return
 		}
 		var body struct {
 			ID     string `json:"id"`

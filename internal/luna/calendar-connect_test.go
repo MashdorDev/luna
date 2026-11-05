@@ -96,6 +96,9 @@ func TestCalendarConnectFlowAddsAndRemovesCalendars(t *testing.T) {
 		return recorder
 	}
 
+	if got := app.backPath("/%5Cevil.com"); got != "/" {
+		t.Fatalf("back path %q leaves Luna", got)
+	}
 	if code := do("POST", "http://luna.test/api/calendar/connect/start", url.Values{"app": {"0"}}, nil, "https://evil.test").Code; code != http.StatusForbidden {
 		t.Fatalf("start from another site: %d", code)
 	}
@@ -123,6 +126,11 @@ func TestCalendarConnectFlowAddsAndRemovesCalendars(t *testing.T) {
 	}, cookie, "http://luna.test")
 	if saved.Code != http.StatusSeeOther || saved.Header().Get("Location") != "/calendar" {
 		t.Fatalf("save: %d %s", saved.Code, saved.Body.String())
+	}
+	// A second click on the same sign-in adds nothing
+	again2 := do("POST", "http://luna.test/api/calendar/connect/save", url.Values{"state": {state}, "pick-0": {"on"}}, cookie, "http://luna.test")
+	if again2.Code != http.StatusOK || !strings.Contains(again2.Body.String(), "already saved") {
+		t.Fatalf("double save: %d", again2.Code)
 	}
 	names := []string{}
 	for _, info := range hub.Calendars() {
@@ -156,5 +164,34 @@ func TestCalendarConnectFlowAddsAndRemovesCalendars(t *testing.T) {
 	left, _ := hub.connect.load()
 	if len(left.Accounts) != 1 || len(left.Accounts[0].Calendars) != 1 {
 		t.Fatalf("store after remove %+v", left)
+	}
+}
+
+func TestCalendarReconnectReplacesTheKeyOnRunningFeeds(t *testing.T) {
+	hub, err := newCalendarHub(calendarConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hub.addFeeds([]calendarFeed{
+		{Name: "A", connected: "a@x.org", Google: &calendarGoogle{ClientID: "web", ClientSecret: "s", RefreshToken: "old"}},
+		{Name: "B", connected: "b@x.org", Google: &calendarGoogle{ClientID: "web", ClientSecret: "s", RefreshToken: "other"}},
+	})
+	hub.states[0].token = "stale-access"
+	hub.replaceToken("a@x.org", "web", "new")
+	feeds := hub.feedList()
+	if feeds[0].Google.RefreshToken != "new" || hub.states[0].token != "" || feeds[1].Google.RefreshToken != "other" {
+		t.Fatalf("got %q %q %q", feeds[0].Google.RefreshToken, hub.states[0].token, feeds[1].Google.RefreshToken)
+	}
+}
+
+func TestSameOriginIgnoresThePortTheProxyDrops(t *testing.T) {
+	request := httptest.NewRequest("POST", "http://10.0.0.200/api/calendar/respond", nil)
+	request.Header.Set("Origin", "http://10.0.0.200:5088")
+	if !sameOrigin(request) {
+		t.Fatal("LAN page refused")
+	}
+	request.Header.Set("Origin", "http://10.0.0.200.evil.test")
+	if sameOrigin(request) {
+		t.Fatal("other host accepted")
 	}
 }

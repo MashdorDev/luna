@@ -136,6 +136,8 @@ func TestCalendarHubReadsGoogleCalendarAPI(t *testing.T) {
 			}
 			tokens.Add(1)
 			w.Write([]byte(`{"access_token":"access","expires_in":3600}`))
+		case r.URL.Path == "/users/me/calendarList/primary":
+			w.Write([]byte(`{"id":"dor@losttribe.org","primary":true}`))
 		case r.URL.Path == "/calendars/primary/events":
 			if r.Header.Get("Authorization") != "Bearer access" || r.URL.Query().Get("singleEvents") != "true" {
 				http.Error(w, "no", http.StatusUnauthorized)
@@ -148,7 +150,8 @@ func TestCalendarHubReadsGoogleCalendarAPI(t *testing.T) {
 					"attachments":[{"title":"Agenda","fileUrl":"https://docs.google.com/document/d/1","iconLink":"https://icon"}],
 					"conferenceData":{"entryPoints":[{"entryPointType":"video","uri":"https://meet.google.com/abc-defg-hij"},{"entryPointType":"phone","uri":"tel:+1-555-0100","label":"+1 555-0100","pin":"123456"}]}},
 				{"summary":"Offsite","status":"tentative","start":{"date":"2026-11-06"},"end":{"date":"2026-11-07"}},
-				{"summary":"Skipped","start":{"dateTime":"2026-11-05T12:00:00Z"},"end":{"dateTime":"2026-11-05T13:00:00Z"},"attendees":[{"self":true,"responseStatus":"declined"}]},
+				{"summary":"Skipped","start":{"dateTime":"2026-11-05T12:00:00Z"},"end":{"dateTime":"2026-11-05T13:00:00Z"},"attendees":[{"email":"DOR@losttribe.org","self":true,"responseStatus":"declined"}]},
+				{"summary":"Theirs","start":{"dateTime":"2026-11-05T15:00:00Z"},"end":{"dateTime":"2026-11-05T16:00:00Z"},"attendees":[{"email":"sam@x.org","self":true,"responseStatus":"declined"},{"email":"pete@x.org","organizer":true}]},
 				{"summary":"Home","eventType":"workingLocation","workingLocationProperties":{"type":"homeOffice"},"start":{"date":"2026-11-05"},"end":{"date":"2026-11-06"}},
 				{"summary":"Focus","eventType":"focusTime","start":{"dateTime":"2026-11-05T14:00:00Z"},"end":{"dateTime":"2026-11-05T16:00:00Z"}},
 				{"summary":"Sam's birthday","eventType":"birthday","start":{"date":"2026-11-06"},"end":{"date":"2026-11-07"}},
@@ -174,8 +177,13 @@ func TestCalendarHubReadsGoogleCalendarAPI(t *testing.T) {
 			t.Fatal(err)
 		}
 		// Working location and away come through as day labels; focus time and birthdays do not
-		if len(events) != 4 || events[2].Marker != "Home" || events[3].Marker != "Away" || events[3].remind {
-			t.Fatalf("want 2 meetings and 2 day labels, got %+v", events)
+		// "self" on someone else's calendar is that person: their decline does not hide the
+		// meeting, and it is not Dor's to answer
+		if len(events) != 5 || events[2].Name != "Theirs" || events[2].Response != "" || events[2].respondID != "" || events[2].Attendees[0].Self {
+			t.Fatalf("someone else's answer taken as Dor's: %+v", events)
+		}
+		if events[3].Marker != "Home" || events[4].Marker != "Away" || events[4].remind {
+			t.Fatalf("want 2 day labels, got %+v", events[3:])
 		}
 		if events[0].Link != "https://meet.google.com/abc-defg-hij" || events[0].End.Sub(events[0].Start) != 15*time.Minute {
 			t.Fatalf("standup: %+v", events[0])

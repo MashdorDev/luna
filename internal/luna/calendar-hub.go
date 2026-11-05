@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/tidwall/gjson"
 	"html"
 	"log/slog"
 	"net/http"
@@ -126,6 +127,9 @@ type calendarFeedState struct {
 	tokenExpires time.Time
 	// When each meeting, by uid, was last seen moving
 	moved map[string]time.Time
+	// The signed-in account's email. A feed can read someone else's calendar, where
+	// "self" is that calendar's owner, so only this email counts as Dor's answer.
+	owner string
 }
 
 type calendarHub struct {
@@ -231,6 +235,36 @@ func (hub *calendarHub) addFeeds(feeds []calendarFeed) {
 		hub.states = append(hub.states, calendarFeedState{})
 	}
 	hub.version.Add(1)
+}
+
+// replaceToken gives an account's running feeds the key from a new sign-in, so a calendar
+// whose old key stopped working recovers without a restart
+func (hub *calendarHub) replaceToken(account, clientID, refresh string) {
+	hub.mu.Lock()
+	defer hub.mu.Unlock()
+	for i := range hub.feeds {
+		feed := &hub.feeds[i]
+		if feed.connected != account || feed.Google == nil || feed.Google.ClientID != clientID {
+			continue
+		}
+		google := *feed.Google
+		google.RefreshToken = refresh
+		feed.Google = &google
+		hub.states[i].token = ""
+		hub.states[i].fetched = time.Time{}
+	}
+}
+
+func (hub *calendarHub) setOwner(index int, email string) {
+	hub.mu.Lock()
+	defer hub.mu.Unlock()
+	hub.states[index].owner = email
+}
+
+func (hub *calendarHub) ownerOf(index int) string {
+	hub.mu.Lock()
+	defer hub.mu.Unlock()
+	return hub.states[index].owner
 }
 
 // removeFeeds takes off the connected feeds for an account's calendar, or its tasks
@@ -601,13 +635,29 @@ func (hub *calendarHub) fetchGoogle(index int) ([]calendarRaw, error) {
 	}
 	// Meetings left on "the calendar's default" reminders get those minutes
 	var defaults []int
-	if request, err := cockpitRequest("GET", calendarGoogleAPI+"/users/me/calendarList/"+url.PathEscape(google.Calendar), map[string]string{"Authorization": "Bearer " + token}, nil); err == nil {
-		if list, err := cockpitFetch(request); err == nil {
-			for _, reminder := range list.Get("defaultReminders").Array() {
-				if reminder.Get("method").String() == "popup" {
-					defaults = append(defaults, int(reminder.Get("minutes").Int()))
-				}
+	listEntry := func(calendar string) (gjson.Result, bool) {
+		request, err := cockpitRequest("GET", calendarGoogleAPI+"/users/me/calendarList/"+url.PathEscape(calendar), map[string]string{"Authorization": "Bearer " + token}, nil)
+		if err != nil {
+			return gjson.Result{}, false
+		}
+		entry, err := cockpitFetch(request)
+		return entry, err == nil
+	}
+	if entry, ok := listEntry(google.Calendar); ok {
+		for _, reminder := range entry.Get("defaultReminders").Array() {
+			if reminder.Get("method").String() == "popup" {
+				defaults = append(defaults, int(reminder.Get("minutes").Int()))
 			}
+		}
+		if entry.Get("primary").Bool() {
+			hub.setOwner(index, entry.Get("id").String())
+		}
+	}
+	owner := hub.ownerOf(index)
+	if owner == "" {
+		if entry, ok := listEntry("primary"); ok {
+			owner = entry.Get("id").String()
+			hub.setOwner(index, owner)
 		}
 	}
 	var raws []calendarRaw
@@ -652,8 +702,12 @@ func (hub *calendarHub) fetchGoogle(index int) ([]calendarRaw, error) {
 				Organizer: entry.Get("organizer").Bool(), Optional: entry.Get("optional").Bool(), Self: entry.Get("self").Bool(),
 				Comment: entry.Get("comment").String(),
 			}
-			if attendee.Self {
+			// Dor's own entry, by the signed-in account's email, not by "self"
+			if owner != "" && strings.EqualFold(attendee.Email, owner) {
 				raw.response, account = attendee.Status, attendee.Email
+				attendee.Self = true
+			} else {
+				attendee.Self = false
 			}
 			raw.attendees = append(raw.attendees, attendee)
 		}
@@ -666,8 +720,8 @@ func (hub *calendarHub) fetchGoogle(index int) ([]calendarRaw, error) {
 				Name: item.Get("organizer.displayName").String(), Email: item.Get("organizer.email").String(), Organizer: true,
 			}}
 		}
-		if account == "" && item.Get("organizer.self").Bool() {
-			account = item.Get("organizer.email").String()
+		if account == "" {
+			account = owner
 		}
 		// Google opens the event in whichever account is signed in first unless told which
 		if raw.open != "" && account != "" {
@@ -854,6 +908,8 @@ func mergeCalendarEvents(events []calendarEvent) []calendarEvent {
 				merged[last].Dial = event.Dial
 			}
 			merged[last].Recurring = merged[last].Recurring || event.Recurring
+			// Events share their slices with the hub's copy, so append to a clone
+			merged[last].Reminders = slices.Clone(merged[last].Reminders)
 			for _, minutes := range event.Reminders {
 				if !slices.Contains(merged[last].Reminders, minutes) {
 					merged[last].Reminders = append(merged[last].Reminders, minutes)

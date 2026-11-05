@@ -213,11 +213,18 @@ function weekData(root, events, shown) {
             timed[i].push({ event, start, end, from, to });
         });
     });
+    // Calendars without reminders (a kid's school day) sit side by side with meetings,
+    // but only meetings count as an overlap, toward booked time, or as Now and Next
     timed.forEach((list) => {
         list.sort((a, b) => a.from - b.from || b.to - a.to);
         lanes(list);
+        list.forEach((item) => {
+            item.clash = !item.event.quiet && list.some((other) => other !== item && !other.event.quiet
+                && other.from < item.to && other.to > item.from);
+        });
     });
-    const stats = timed.map((list) => ({ count: list.length, minutes: bookedMinutes(list), clashes: list.filter((item) => item.lanes > 1).length }));
+    const meetings = (list) => list.filter((item) => !item.event.quiet);
+    const stats = timed.map((list) => ({ count: meetings(list).length, minutes: bookedMinutes(meetings(list)), clashes: list.filter((item) => item.clash).length }));
     return { days, keys, timed, allDay, stats };
 }
 
@@ -229,13 +236,13 @@ function buildSummary(root, data) {
     const summary = root.querySelector('[data-cal-summary]');
     const count = data.stats.reduce((sum, stat) => sum + stat.count, 0);
     const minutes = data.stats.reduce((sum, stat) => sum + stat.minutes, 0);
-    const clashes = data.timed.flat().filter((item) => item.lanes > 1);
+    const clashes = data.timed.flat().filter((item) => item.clash);
     const parts = [element('b', '', `${count} ${count === 1 ? 'meeting' : 'meetings'}, ${hoursText(minutes)} booked`)];
     const busiest = data.stats.reduce((best, stat, i) => (stat.minutes > data.stats[best].minutes ? i : best), 0);
     if (count) parts.push(element('span', '', `Busiest ${data.days[busiest].toLocaleDateString(undefined, { weekday: 'long' })}, ${hoursText(data.stats[busiest].minutes)}`));
     if (clashes.length) parts.push(element('span', 'warn', `${clashes.length} overlapping`));
     const now = new Date();
-    const next = data.timed.flat().filter((item) => item.end > now).sort((a, b) => a.start - b.start)[0];
+    const next = data.timed.flat().filter((item) => item.end > now && !item.event.quiet).sort((a, b) => a.start - b.start)[0];
     if (next) {
         const button = opener('button', 'cw-next', next.event);
         button.append(element('span', '', next.start <= now ? 'Now: ' : 'Next: '), element('b', '', next.event.name));
@@ -289,14 +296,14 @@ function buildWeek(root, data) {
         const column = element('div', 'cw-day' + (i === 0 ? ' today' : ''));
         list.forEach((item) => {
             const { event } = item;
-            const flags = [event.tentative && 'tent', event.changed && 'moved', item.lanes > 1 && 'clash', item.to - item.from < 45 && 'short'].filter(Boolean).join(' ');
+            const flags = [event.tentative && 'tent', event.changed && 'moved', item.clash && 'clash', item.to - item.from < 45 && 'short'].filter(Boolean).join(' ');
             const block = opener('button', `cw-event cal-c${event.color} ${flags}`, event);
             block.style.top = `${((item.from - first) / span) * 100}%`;
             block.style.height = `${((item.to - item.from) / span) * 100}%`;
             block.style.left = `${(item.lane / item.lanes) * 100}%`;
             block.style.width = `${100 / item.lanes}%`;
             block.title = [event.name, timeRange(item.start, item.end, home), event.location, event.calendars.join(', '),
-                event.tentative && 'Tentative', event.changed && `Moved ${ago(new Date(event.changed))}`, item.lanes > 1 && 'Overlaps another meeting']
+                event.tentative && 'Tentative', event.changed && `Moved ${ago(new Date(event.changed))}`, item.clash && 'Overlaps another meeting']
                 .filter(Boolean).join('\n');
             const name = element('b', '', event.name);
             name.dir = 'auto';
@@ -330,7 +337,7 @@ function buildList(root, data) {
             nodes.push(element('div', 'cw-lfree', 'Nothing booked'));
             return;
         }
-        items.forEach(({ event, start, end, lanes: overlap }) => {
+        items.forEach(({ event, start, end, clash }) => {
             const row = opener('button', `cw-lrow cal-c${event.color}${event.holiday ? ' hol' : ''}${end && end < now ? ' past' : ''}`, event);
             const time = element('span', 'cw-ltime', start ? `${clock(start)} - ${clock(end)}` : 'All day');
             const body = element('span', 'cw-lbody');
@@ -340,7 +347,7 @@ function buildList(root, data) {
             if (event.link) line.append(videoMark());
             if (event.tentative) line.append(element('em', '', 'Tentative'));
             if (event.changed) line.append(element('em', 'warn', `Moved ${ago(new Date(event.changed))}`));
-            if (overlap > 1) line.append(element('em', 'warn', 'Overlaps'));
+            if (clash) line.append(element('em', 'warn', 'Overlaps'));
             const where = event.location && !/^https?:/i.test(event.location) ? `${event.location}, ` : '';
             line.append(`${where}${event.calendars.join(', ')}`);
             body.append(name, line);
@@ -588,7 +595,7 @@ function openDetails(event, root) {
 
     if (start) {
         const shown = root ? shownFor(root) : () => true;
-        const clashes = rootEvents(root).filter((other) => other.start && other.name !== event.name
+        const clashes = event.quiet ? [] : rootEvents(root).filter((other) => other.start && other.name !== event.name && !other.quiet
             && new Date(other.start) < end && new Date(other.end) > start && other.calendars.some(shown));
         if (clashes.length) {
             const list = element('ul', 'cal-dclash');

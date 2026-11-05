@@ -275,10 +275,9 @@ function buildSummary(root, data) {
 function buildWeek(root, data) {
     const home = root.dataset.calHome;
     const { days, timed, allDay, stats } = data;
-    const all = timed.flat();
-    // Office hours unless a meeting falls outside them
-    const first = Math.min(8 * 60, ...all.map((e) => Math.floor(e.from / 60) * 60));
-    const last = Math.max(18 * 60, ...all.map((e) => Math.ceil(e.to / 60) * 60));
+    // The whole day, so the now line is there at any hour; the box scrolls to it
+    const first = 0;
+    const last = 24 * 60;
     const span = last - first;
 
     const grid = root.querySelector('[data-cal-grid]');
@@ -344,6 +343,24 @@ function buildWeek(root, data) {
     grid.dataset.first = first;
     grid.dataset.span = span;
     grid.replaceChildren(...nodes);
+    scrollWeek(root, grid, first, span);
+}
+
+// Once per page and week shown, so rebuilds at each meeting boundary keep where Dor scrolled:
+// a third of the box above now on today's week, 7 AM on other weeks
+const scrolledWeeks = new WeakMap();
+function scrollWeek(root, grid, first, span) {
+    const box = root.querySelector('[data-cal-week-wrap]');
+    if (!box || box.hidden || scrolledWeeks.get(root) === weekOffset) return;
+    scrolledWeeks.set(root, weekOffset);
+    const line = grid.querySelector('.cw-now');
+    const column = grid.querySelector('.cw-day');
+    if (!column) return;
+    const minute = line ? minutesOf(new Date()) : 7 * 60;
+    const top = column.getBoundingClientRect().top - box.getBoundingClientRect().top + box.scrollTop;
+    const head = grid.querySelector('.cw-head')?.offsetHeight || 0;
+    const y = top + ((minute - first) / span) * column.offsetHeight;
+    box.scrollTop = Math.max(0, y - head - (line ? (box.clientHeight - head) / 3 : 12));
 }
 
 // The hour column only fits the digits, so AM and PM go

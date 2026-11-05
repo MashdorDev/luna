@@ -64,7 +64,10 @@
 .cw-zone { flex-basis: 100%; color: var(--color-text-subdue); font-size: 12px; }
 .cw-zone[hidden] { display: none; }
 
-.cw-scroll { overflow-x: auto; }
+.cw-scroll { overflow: auto; max-height: min(75vh, 860px); overscroll-behavior: contain; }
+/* Day names stay in view while the hours scroll */
+.cw-head, .cw-grid > .cw-corner:first-child { position: sticky; top: 0; z-index: 5; background: var(--color-widget-background); }
+.cw-head.today { background: color-mix(in srgb, var(--color-primary) 5%, var(--color-widget-background)); }
 .cw-grid { display: grid; grid-template-columns: 44px repeat(var(--days, 7), minmax(92px, 1fr)); min-width: calc(44px + var(--days, 7) * 92px); font-size: 12px; }
 .cw-head { padding: 0 6px 6px; color: var(--color-text-subdue); }
 .cw-date { display: flex; gap: 6px; align-items: baseline; }

@@ -379,7 +379,8 @@ function paintWeek(root) {
     // Counting the starts and ends already passed puts every meeting boundary in the key,
     // so "Now" and "Next" move on the moment a meeting starts or ends.
     const passed = events.reduce((sum, event) => sum + (new Date(event.start) <= now) + (new Date(event.end) <= now), 0);
-    const key = [root.dataset.calEvents, dayKey(now), passed, view, JSON.stringify(choices())].join('#');
+    // The hour keeps "Moved 5 min ago" from going stale after the day's last meeting
+    const key = [root.dataset.calEvents, dayKey(now), now.getHours(), passed, view, JSON.stringify(choices())].join('#');
     if (grid.dataset.key !== key || !grid.firstChild) {
         const data = weekData(root, events, shown);
         buildSummary(root, data);
@@ -645,11 +646,20 @@ function sentList() {
 const BASE = new URL(import.meta.url).pathname.split('/static/')[0];
 let worker = null;
 let notifyFailed = false;
-if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register(`${BASE}/calendar-sw.js`, { scope: `${BASE}/` })
-        .then(() => navigator.serviceWorker.ready)
-        .then((registration) => { worker = registration; })
+// Waits on this registration rather than serviceWorker.ready, which never resolves on a page
+// outside the scope (such as /luna without the trailing slash)
+const workerReady = !('serviceWorker' in navigator) ? Promise.resolve()
+    : navigator.serviceWorker.register(`${BASE}/calendar-sw.js`, { scope: `${BASE}/` })
+        .then((registration) => {
+            const pending = registration.installing || registration.waiting;
+            if (registration.active || !pending) return registration;
+            return new Promise((resolve) => pending.addEventListener('statechange', () => {
+                if (pending.state === 'activated') resolve(registration);
+            }));
+        })
+        .then((registration) => { if (registration.active) worker = registration; })
         .catch(() => {});
+if ('serviceWorker' in navigator) {
     navigator.serviceWorker.addEventListener('message', (message) => {
         const wanted = message.data?.calendarOpen;
         if (!wanted) return;
@@ -660,10 +670,16 @@ if ('serviceWorker' in navigator) {
     });
 }
 
+// Resolves to whether the browser showed it
 function notify(event, root, title, options) {
+    const failed = () => {
+        notifyFailed = true;
+        paintBells();
+        return false;
+    };
     if (worker) {
         return worker.showNotification(title, { ...options, data: { event: `${event.name}|${event.start}`, page: location.href } })
-            .catch(() => { notifyFailed = true; paintBells(); });
+            .then(() => true, failed);
     }
     try {
         const note = new Notification(title, options);
@@ -672,9 +688,17 @@ function notify(event, root, title, options) {
             openDetails(event, root);
             note.close();
         };
+        return Promise.resolve(true);
     } catch {
-        notifyFailed = true;
-        paintBells();
+        return Promise.resolve(failed());
+    }
+}
+
+function saveSent(sent) {
+    try {
+        localStorage.setItem(SENT, JSON.stringify(sent));
+    } catch {
+        // Without storage each tab reminds on its own
     }
 }
 
@@ -698,6 +722,12 @@ function remind() {
                     body: `In ${minutes} min, ${timeRange(start, new Date(event.end), root.dataset.calHome)}\n${event.calendars.join(', ')}`,
                     tag: key,
                     requireInteraction: minutes <= 1,
+                }).then((shown) => {
+                    if (shown) return;
+                    // Not shown, so another tab or a later tick may still try
+                    const latest = sentList();
+                    delete latest[key];
+                    saveSent(latest);
                 });
             });
         });
@@ -708,13 +738,7 @@ function remind() {
             changed = true;
         }
     });
-    if (changed) {
-        try {
-            localStorage.setItem(SENT, JSON.stringify(sent));
-        } catch {
-            // Without storage each tab reminds on its own
-        }
-    }
+    if (changed) saveSent(sent);
 }
 
 function paintBells() {
@@ -755,5 +779,8 @@ window.addEventListener('storage', (event) => {
 });
 paint();
 setInterval(paint, 15000);
-remind();
-setInterval(remind, 20000);
+// The first reminder waits for the worker, or Android drops it; 5 seconds caps the wait
+Promise.race([workerReady, new Promise((resolve) => setTimeout(resolve, 5000))]).then(() => {
+    remind();
+    setInterval(remind, 20000);
+});

@@ -142,16 +142,62 @@ function element(tag, className, text) {
     return node;
 }
 
-function buildWeek(root, events, shown) {
-    const home = root.dataset.calHome;
+const VIEW = 'luna-calendar-view';
+
+function savedView() {
+    try {
+        const view = localStorage.getItem(VIEW);
+        if (view === 'week' || view === 'list') return view;
+    } catch {
+        // fall through to the default
+    }
+    // Seven columns do not fit a phone, so phones start on the list
+    return window.matchMedia('(max-width: 700px)').matches ? 'list' : 'week';
+}
+
+const hoursText = (minutes) => {
+    const h = Math.floor(minutes / 60);
+    const m = minutes % 60;
+    return h && m ? `${h}h ${m}m` : h ? `${h}h` : `${m}m`;
+};
+
+// Booked time counts overlapping meetings once
+function bookedMinutes(items) {
+    let total = 0;
+    let until = -1;
+    [...items].sort((a, b) => a.from - b.from).forEach(({ from, to }) => {
+        if (to <= until) return;
+        total += to - Math.max(from, until);
+        until = to;
+    });
+    return total;
+}
+
+const VIDEO_ICON = '<svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M2 4.5A1.5 1.5 0 0 1 3.5 3h6A1.5 1.5 0 0 1 11 4.5v1.2l2.4-1.6a.6.6 0 0 1 .9.5v6.8a.6.6 0 0 1-.9.5L11 10.3v1.2A1.5 1.5 0 0 1 9.5 13h-6A1.5 1.5 0 0 1 2 11.5z"/></svg>';
+
+function videoMark() {
+    const mark = element('i', 'cw-video');
+    mark.innerHTML = VIDEO_ICON;
+    mark.title = 'Has a meeting link';
+    return mark;
+}
+
+function opener(tag, className, event) {
+    const node = element(tag, className);
+    if (tag === 'button') node.type = 'button';
+    node.dataset.calOpen = '';
+    node.dataset.calEvent = JSON.stringify(event);
+    node.dataset.calEnd = event.end || '';
+    return node;
+}
+
+function weekData(root, events, shown) {
     const now = new Date();
     const days = [...Array(Number(root.dataset.calDays) || 7)].map((_, i) => addDays(now, i));
     const keys = days.map(dayKey);
-    const visible = events.filter((event) => event.calendars.some(shown));
-
     const timed = keys.map(() => []);
     const allDay = keys.map(() => []);
-    visible.forEach((event) => {
+    events.filter((event) => event.calendars.some(shown)).forEach((event) => {
         if (event.day) {
             keys.forEach((key, i) => { if (event.day <= key && key < event.endDay) allDay[i].push(event); });
             return;
@@ -167,9 +213,46 @@ function buildWeek(root, events, shown) {
             timed[i].push({ event, start, end, from, to });
         });
     });
+    timed.forEach((list) => {
+        list.sort((a, b) => a.from - b.from || b.to - a.to);
+        lanes(list);
+    });
+    const stats = timed.map((list) => ({ count: list.length, minutes: bookedMinutes(list), clashes: list.filter((item) => item.lanes > 1).length }));
+    return { days, keys, timed, allDay, stats };
+}
 
-    // Office hours unless a meeting falls outside them
+function dayStats(stat) {
+    return stat.count ? `${stat.count} · ${hoursText(stat.minutes)}` : 'Free';
+}
+
+function buildSummary(root, data) {
+    const summary = root.querySelector('[data-cal-summary]');
+    const count = data.stats.reduce((sum, stat) => sum + stat.count, 0);
+    const minutes = data.stats.reduce((sum, stat) => sum + stat.minutes, 0);
+    const clashes = data.timed.flat().filter((item) => item.lanes > 1);
+    const parts = [element('b', '', `${count} ${count === 1 ? 'meeting' : 'meetings'}, ${hoursText(minutes)} booked`)];
+    const busiest = data.stats.reduce((best, stat, i) => (stat.minutes > data.stats[best].minutes ? i : best), 0);
+    if (count) parts.push(element('span', '', `Busiest ${data.days[busiest].toLocaleDateString(undefined, { weekday: 'long' })}, ${hoursText(data.stats[busiest].minutes)}`));
+    if (clashes.length) parts.push(element('span', 'warn', `${clashes.length} overlapping`));
+    const now = new Date();
+    const next = data.timed.flat().filter((item) => item.end > now).sort((a, b) => a.start - b.start)[0];
+    if (next) {
+        const button = opener('button', 'cw-next', next.event);
+        button.append(element('span', '', next.start <= now ? 'Now: ' : 'Next: '), element('b', '', next.event.name));
+        const left = element('span', 'cw-left');
+        left.dataset.calNextStart = next.event.start;
+        left.dataset.calNextEnd = next.event.end;
+        button.append(left);
+        parts.push(button);
+    }
+    summary.replaceChildren(...parts);
+}
+
+function buildWeek(root, data) {
+    const home = root.dataset.calHome;
+    const { days, timed, allDay, stats } = data;
     const all = timed.flat();
+    // Office hours unless a meeting falls outside them
     const first = Math.min(8 * 60, ...all.map((e) => Math.floor(e.from / 60) * 60));
     const last = Math.max(18 * 60, ...all.map((e) => Math.ceil(e.to / 60) * 60));
     const span = last - first;
@@ -178,14 +261,17 @@ function buildWeek(root, events, shown) {
     const nodes = [element('div', 'cw-corner')];
     days.forEach((day, i) => {
         const head = element('div', 'cw-head' + (i === 0 ? ' today' : ''));
-        head.append(element('b', '', day.toLocaleDateString(undefined, { weekday: 'short' })), element('span', '', String(day.getDate())));
+        const date = element('div', 'cw-date');
+        date.append(element('b', '', day.toLocaleDateString(undefined, { weekday: 'short' })), element('span', '', String(day.getDate())));
+        head.append(date, element('small', stats[i].clashes ? 'warn' : '', dayStats(stats[i])));
         nodes.push(head);
     });
     nodes.push(element('div', 'cw-corner'));
     allDay.forEach((list) => {
         const cell = element('div', 'cw-allday');
         list.forEach((event) => {
-            const chip = element('div', `cw-chip cal-c${event.color}${event.holiday ? ' hol' : ''}`, event.name);
+            const chip = opener('button', `cw-chip cal-c${event.color}${event.holiday ? ' hol' : ''}`, event);
+            chip.textContent = event.name;
             chip.title = `${event.name}, ${event.calendars.join(', ')}`;
             cell.append(chip);
         });
@@ -201,21 +287,23 @@ function buildWeek(root, events, shown) {
     nodes.push(hours);
     timed.forEach((list, i) => {
         const column = element('div', 'cw-day' + (i === 0 ? ' today' : ''));
-        list.sort((a, b) => a.from - b.from || b.to - a.to);
-        lanes(list);
         list.forEach((item) => {
             const { event } = item;
-            const block = element('button', `cw-event cal-c${event.color}`);
-            block.type = 'button';
-            block.dataset.calOpen = '';
-            block.dataset.calEvent = JSON.stringify(event);
+            const flags = [event.tentative && 'tent', event.changed && 'moved', item.lanes > 1 && 'clash', item.to - item.from < 45 && 'short'].filter(Boolean).join(' ');
+            const block = opener('button', `cw-event cal-c${event.color} ${flags}`, event);
             block.style.top = `${((item.from - first) / span) * 100}%`;
             block.style.height = `${((item.to - item.from) / span) * 100}%`;
             block.style.left = `${(item.lane / item.lanes) * 100}%`;
             block.style.width = `${100 / item.lanes}%`;
-            block.dataset.calEnd = event.end;
-            block.title = `${event.name}\n${timeRange(item.start, item.end, home)}\n${event.calendars.join(', ')}`;
-            block.append(element('b', '', event.name), element('span', '', clock(item.start)));
+            block.title = [event.name, timeRange(item.start, item.end, home), event.location, event.calendars.join(', '),
+                event.tentative && 'Tentative', event.changed && `Invite changed ${ago(new Date(event.changed))}`, item.lanes > 1 && 'Overlaps another meeting']
+                .filter(Boolean).join('\n');
+            const name = element('b', '', event.name);
+            name.dir = 'auto';
+            // A short block only has room for the name and when it starts
+            const time = element('span', 'cw-time', item.to - item.from < 45 ? clock(item.start) : `${clock(item.start)} - ${clock(item.end)}`);
+            if (event.link) time.prepend(videoMark());
+            block.append(name, time, element('span', 'cw-where', event.location && !/^https?:/i.test(event.location) ? event.location : event.calendars.join(', ')));
             column.append(block);
         });
         if (i === 0) column.append(element('i', 'cw-now'));
@@ -228,15 +316,45 @@ function buildWeek(root, events, shown) {
     grid.replaceChildren(...nodes);
 }
 
+function buildList(root, data) {
+    const list = root.querySelector('[data-cal-list]');
+    const now = new Date();
+    const nodes = [];
+    data.days.forEach((day, i) => {
+        const items = [...data.allDay[i].map((event) => ({ event })), ...data.timed[i]];
+        const head = element('div', 'cw-lday' + (i === 0 ? ' today' : ''));
+        const label = i === 0 ? 'Today' : i === 1 ? 'Tomorrow' : day.toLocaleDateString(undefined, { weekday: 'long' });
+        head.append(element('b', '', `${label}, ${day.toLocaleDateString(undefined, { day: 'numeric', month: 'short' })}`), element('small', data.stats[i].clashes ? 'warn' : '', dayStats(data.stats[i])));
+        nodes.push(head);
+        if (!items.length) {
+            nodes.push(element('div', 'cw-lfree', 'Nothing booked'));
+            return;
+        }
+        items.forEach(({ event, start, end, lanes: overlap }) => {
+            const row = opener('button', `cw-lrow cal-c${event.color}${event.holiday ? ' hol' : ''}${end && end < now ? ' past' : ''}`, event);
+            const time = element('span', 'cw-ltime', start ? `${clock(start)} - ${clock(end)}` : 'All day');
+            const body = element('span', 'cw-lbody');
+            const name = element('b', '', event.name);
+            name.dir = 'auto';
+            const line = element('span', 'cw-lline');
+            if (event.link) line.append(videoMark());
+            if (event.tentative) line.append(element('em', '', 'Tentative'));
+            if (event.changed) line.append(element('em', 'warn', `Changed ${ago(new Date(event.changed))}`));
+            if (overlap > 1) line.append(element('em', 'warn', 'Overlaps'));
+            const where = event.location && !/^https?:/i.test(event.location) ? `${event.location}, ` : '';
+            line.append(`${where}${event.calendars.join(', ')}`);
+            body.append(name, line);
+            row.append(element('i', 'cw-lbar'), time, body);
+            nodes.push(row);
+        });
+    });
+    list.replaceChildren(...nodes);
+}
+
 function paintWeek(root) {
     const grid = root.querySelector('[data-cal-grid]');
     if (!grid) return;
-    let events = [];
-    try {
-        events = JSON.parse(root.dataset.calEvents || '[]');
-    } catch {
-        events = [];
-    }
+    const events = parseList(root.dataset.calEvents);
     const shown = shownFor(root);
     root.querySelectorAll('[data-cal-toggle]').forEach((box) => {
         const on = shown(box.dataset.calToggle);
@@ -247,24 +365,53 @@ function paintWeek(root) {
     const zone = root.querySelector('[data-cal-zone]');
     const away = home && clock(now, home) !== clock(now);
     setHidden(zone, !away);
-    if (away) setText(zone, `Times in ${place(Intl.DateTimeFormat().resolvedOptions().timeZone)}, hover a meeting for ${place(home)}`);
+    if (away) setText(zone, `Times in ${place(Intl.DateTimeFormat().resolvedOptions().timeZone)}, open a meeting for ${place(home)}`);
 
-    // Rebuilding on every tick would fire the observer again, so only when something changed
-    const key = [root.dataset.calEvents, dayKey(now), JSON.stringify(choices())].join('#');
+    const view = savedView();
+    root.querySelectorAll('[data-cal-view]').forEach((button) => {
+        const on = String(button.dataset.calView === view);
+        if (button.getAttribute('aria-pressed') !== on) button.setAttribute('aria-pressed', on);
+    });
+    setHidden(root.querySelector('[data-cal-week-wrap]'), view !== 'week');
+    setHidden(root.querySelector('[data-cal-list]'), view !== 'list');
+
+    // Rebuilding on every tick would fire the observer again, so only when something changed.
+    // The hour is in the key so "next meeting" and the overlap counts move on as the day goes.
+    const key = [root.dataset.calEvents, dayKey(now), now.getHours(), view, JSON.stringify(choices())].join('#');
     if (grid.dataset.key !== key || !grid.firstChild) {
-        buildWeek(root, events, shown);
+        const data = weekData(root, events, shown);
+        buildSummary(root, data);
+        if (view === 'week') buildWeek(root, data);
+        else buildList(root, data);
         grid.dataset.key = key;
     }
-    grid.querySelectorAll('.cw-event').forEach((block) => {
-        const past = new Date(block.dataset.calEnd) < now;
-        if (block.classList.contains('past') !== past) block.classList.toggle('past', past);
+    root.querySelectorAll('.cw-event, .cw-lrow').forEach((node) => {
+        const past = node.dataset.calEnd !== '' && new Date(node.dataset.calEnd) < now;
+        if (node.classList.contains('past') !== past) node.classList.toggle('past', past);
     });
+    const left = root.querySelector('[data-cal-next-start]');
+    if (left) {
+        const start = new Date(left.dataset.calNextStart);
+        const end = new Date(left.dataset.calNextEnd);
+        setText(left, now >= end ? 'ended' : now >= start ? `${duration(end - now)} left` : `in ${duration(start - now)}`);
+    }
     const line = grid.querySelector('.cw-now');
     if (line) {
         const top = `${((minutesOf(now) - Number(grid.dataset.first)) / Number(grid.dataset.span)) * 100}%`;
         if (line.style.top !== top) line.style.top = top;
     }
 }
+
+document.addEventListener('click', (click) => {
+    const button = click.target.closest('[data-cal-view]');
+    if (!button) return;
+    try {
+        localStorage.setItem(VIEW, button.dataset.calView);
+    } catch {
+        // The choice then lasts until reload
+    }
+    paint();
+});
 
 export function paint() {
     document.querySelectorAll('.ck-agenda[data-cal-root]').forEach(paintAgenda);

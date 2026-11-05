@@ -107,7 +107,7 @@ type cockpitWidget struct {
 	SiteCount   int            `yaml:"-"`
 	SitesDown   []string       `yaml:"-"`
 	Hours       cockpitHours   `yaml:"-"`
-	Agenda      []cockpitEvent `yaml:"-"`
+	Agenda      []calendarEntry `yaml:"-"`
 	Calendar    *calendarHub   `yaml:"-"`
 	Quotes      marketList     `yaml:"-"`
 	Updated     time.Time      `yaml:"-"`
@@ -185,17 +185,6 @@ type cockpitDay struct {
 	Height int
 }
 
-type cockpitEvent struct {
-	Name      string
-	Start     string
-	End       string
-	Day       string
-	EndDay    string
-	Calendars []string
-	Holiday   bool
-	Link      string
-	Color     int
-}
 
 func (widget *cockpitWidget) initialize() error {
 	widget.withTitle("Home").withCacheDuration(3 * time.Minute)
@@ -298,7 +287,7 @@ func (widget *cockpitWidget) update(ctx context.Context) {
 	}
 
 	var hours cockpitHours
-	var next []cockpitEvent
+	var next []calendarEntry
 	var quotes marketList
 	var down, downURLs []string
 
@@ -1075,37 +1064,8 @@ func (widget *cockpitWidget) fetchHours(now time.Time) (cockpitHours, error) {
 
 // agenda covers today and tomorrow for any viewer: a device can be up to 14 hours
 // off the server's zone, so the page picks its own two days out of this list.
-func (widget *cockpitWidget) agenda(hub *calendarHub, now time.Time) []cockpitEvent {
-	colors := map[string]int{}
-	for _, info := range hub.Calendars() {
-		colors[info.Name] = info.Color
-	}
-	var agenda []cockpitEvent
-	var order []time.Time
-	for _, event := range hub.Events(now, now.Add(62*time.Hour)) {
-		entry := cockpitEvent{
-			Name: event.Name, Calendars: event.Calendars, Holiday: event.Holiday, Link: event.Link, Color: colors[event.Calendars[0]],
-			Start: event.Start.Format(time.RFC3339), End: event.End.Format(time.RFC3339),
-		}
-		if event.AllDay {
-			entry.Start, entry.End = "", ""
-			entry.Day, entry.EndDay = event.Start.Format("2006-01-02"), event.End.Format("2006-01-02")
-		}
-		agenda = append(agenda, entry)
-		order = append(order, ternary(event.AllDay, time.Date(event.Start.Year(), event.Start.Month(), event.Start.Day(), 0, 0, 0, 0, now.Location()), event.Start))
-	}
-	// All-day events arrive as midnight UTC, which is the evening before in Toronto, so they
-	// sort by their own date's midnight to stay at the top of their day
-	indexes := make([]int, len(agenda))
-	for i := range indexes {
-		indexes[i] = i
-	}
-	slices.SortStableFunc(indexes, func(a, b int) int { return order[a].Compare(order[b]) })
-	sorted := make([]cockpitEvent, len(agenda))
-	for i, index := range indexes {
-		sorted[i] = agenda[index]
-	}
-	return sorted
+func (widget *cockpitWidget) agenda(hub *calendarHub, now time.Time) []calendarEntry {
+	return hub.Entries(now, now.Add(62*time.Hour))
 }
 
 // Twelve Data allows 800 calls a day shared with the Markets page, so each symbol

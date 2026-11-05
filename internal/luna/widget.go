@@ -31,6 +31,8 @@ func newWidget(widgetType string) (widget, error) {
 		w = &cockpitWidget{}
 	case "calendar":
 		w = &calendarWidget{}
+	case "calendar-week":
+		w = &calendarWeekWidget{}
 	case "calendar-legacy":
 		w = &oldCalendarWidget{}
 	case "clock":

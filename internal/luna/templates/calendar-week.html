@@ -1,0 +1,13 @@
+{{ template "widget-base.html" . }}
+
+{{ define "widget-content" }}
+<div class="cw" data-cal-root data-cal-home="{{ .Calendar.Zone }}" data-cal-hidden="{{ .Calendar.HiddenJSON }}" data-cal-days="{{ .Days }}" data-cal-events="{{ .EventsJSON }}">
+    <div class="cw-legend">
+        {{ range .Calendar.Calendars }}
+        <label class="cal-c{{ .Color }}"><input type="checkbox" data-cal-toggle="{{ .Name }}"><i></i>{{ .Name }}</label>
+        {{ end }}
+        <span class="cw-zone" data-cal-zone hidden></span>
+    </div>
+    <div class="cw-scroll"><div class="cw-grid" data-cal-grid></div></div>
+</div>
+{{ end }}

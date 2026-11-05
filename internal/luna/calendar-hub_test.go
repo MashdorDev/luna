@@ -14,7 +14,7 @@ import (
 func TestCalendarFeedURLWidensTheWindow(t *testing.T) {
 	got, _ := url.Parse(calendarFeedURL("http://glance-ical:8076/events?url=https%3A%2F%2Fx.test%2Fa.ics&limit=5&horizon_days=365&lookback_days=0"))
 	query := got.Query()
-	if query.Get("limit") != "500" || query.Get("horizon_days") != "15" || query.Get("lookback_days") != "1" {
+	if query.Get("limit") != "500" || query.Get("horizon_days") != "15" || query.Get("lookback_days") != "8" {
 		t.Fatalf("got %s", got.RawQuery)
 	}
 	if query.Get("url") != "https://x.test/a.ics" {
@@ -71,7 +71,7 @@ func TestCalendarHubReadsFeeds(t *testing.T) {
 		t.Fatalf("got %+v", entries)
 	}
 	call, off := entries[0], entries[1]
-	if call.Name != "Client call" || call.Link != "https://zoom.us/j/1" || !call.Tentative || call.Changed == "" {
+	if call.Name != "Client call" || call.Link != "https://zoom.us/j/1" || !call.Tentative || call.Changed != "" {
 		t.Fatalf("got %+v", call)
 	}
 	// One of the two calendars wants reminders, so the merged meeting gets them
@@ -121,5 +121,130 @@ func TestCalendarPlainTextKeepsLinkAddresses(t *testing.T) {
 	want := "Agenda:\n1. Budget & scope\n\nJoin Zoom Meeting (https://zoom.us/j/9?pwd=x)\nhttps://x.test/doc"
 	if got := calendarPlainText(raw); got != want {
 		t.Fatalf("got %q\nwant %q", got, want)
+	}
+}
+
+func TestCalendarHubReadsGoogleCalendarAPI(t *testing.T) {
+	var tokens atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/token":
+			r.ParseForm()
+			if r.Form.Get("refresh_token") != "refresh" || r.Form.Get("client_secret") != "secret" {
+				http.Error(w, "bad", http.StatusBadRequest)
+				return
+			}
+			tokens.Add(1)
+			w.Write([]byte(`{"access_token":"access","expires_in":3600}`))
+		case r.URL.Path == "/calendars/primary/events":
+			if r.Header.Get("Authorization") != "Bearer access" || r.URL.Query().Get("singleEvents") != "true" {
+				http.Error(w, "no", http.StatusUnauthorized)
+				return
+			}
+			w.Write([]byte(`{"items":[
+				{"summary":"Standup","status":"confirmed","start":{"dateTime":"2026-11-05T10:00:00-05:00"},"end":{"dateTime":"2026-11-05T10:15:00-05:00"},"hangoutLink":"https://meet.google.com/abc-defg-hij","updated":"2026-11-04T12:00:00Z",
+					"htmlLink":"https://www.google.com/calendar/event?eid=abc","recurringEventId":"series","reminders":{"useDefault":false,"overrides":[{"method":"popup","minutes":5},{"method":"email","minutes":60}]},
+					"attendees":[{"email":"craig@example.com","displayName":"Craig","organizer":true,"responseStatus":"accepted"},{"email":"dor@losttribe.org","self":true,"responseStatus":"tentative","comment":"may be late"},{"email":"room@resource.calendar.google.com","resource":true,"responseStatus":"accepted"}],
+					"attachments":[{"title":"Agenda","fileUrl":"https://docs.google.com/document/d/1","iconLink":"https://icon"}],
+					"conferenceData":{"entryPoints":[{"entryPointType":"video","uri":"https://meet.google.com/abc-defg-hij"},{"entryPointType":"phone","uri":"tel:+1-555-0100","label":"+1 555-0100","pin":"123456"}]}},
+				{"summary":"Offsite","status":"tentative","start":{"date":"2026-11-06"},"end":{"date":"2026-11-07"}},
+				{"summary":"Skipped","start":{"dateTime":"2026-11-05T12:00:00Z"},"end":{"dateTime":"2026-11-05T13:00:00Z"},"attendees":[{"self":true,"responseStatus":"declined"}]},
+				{"summary":"Home","eventType":"workingLocation","workingLocationProperties":{"type":"homeOffice"},"start":{"date":"2026-11-05"},"end":{"date":"2026-11-06"}},
+				{"summary":"Focus","eventType":"focusTime","start":{"dateTime":"2026-11-05T14:00:00Z"},"end":{"dateTime":"2026-11-05T16:00:00Z"}},
+				{"summary":"Sam's birthday","eventType":"birthday","start":{"date":"2026-11-06"},"end":{"date":"2026-11-07"}},
+				{"summary":"Away","eventType":"outOfOffice","start":{"dateTime":"2026-11-06T14:00:00Z"},"end":{"dateTime":"2026-11-06T22:00:00Z"}}
+			]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	calendarGoogleTokenURL, calendarGoogleAPI = server.URL+"/token", server.URL
+	defer func() {
+		calendarGoogleTokenURL, calendarGoogleAPI = "https://oauth2.googleapis.com/token", "https://www.googleapis.com/calendar/v3"
+	}()
+
+	hub, err := newCalendarHub(calendarConfig{Feeds: []calendarFeed{{Name: "Lost Tribe", Google: &calendarGoogle{ClientID: "id", ClientSecret: "secret", RefreshToken: "refresh"}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		events, err := hub.fetchFeed(0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Working location and away come through as day labels; focus time and birthdays do not
+		if len(events) != 4 || events[2].Marker != "Home" || events[3].Marker != "Away" || events[3].remind {
+			t.Fatalf("want 2 meetings and 2 day labels, got %+v", events)
+		}
+		if events[0].Link != "https://meet.google.com/abc-defg-hij" || events[0].End.Sub(events[0].Start) != 15*time.Minute {
+			t.Fatalf("standup: %+v", events[0])
+		}
+		standup := events[0]
+		if len(standup.Attendees) != 2 || standup.Response != "tentative" || standup.Attendees[1].Comment != "may be late" || !standup.Attendees[0].Organizer {
+			t.Fatalf("guests: %+v, answer %q", standup.Attendees, standup.Response)
+		}
+		if standup.Open != "https://www.google.com/calendar/event?eid=abc&authuser=dor%40losttribe.org" || !standup.Recurring {
+			t.Fatalf("open %q recurring %v", standup.Open, standup.Recurring)
+		}
+		if len(standup.Reminders) != 1 || standup.Reminders[0] != 5 {
+			t.Fatalf("reminders %v", standup.Reminders)
+		}
+		if len(standup.Files) != 1 || standup.Files[0].Title != "Agenda" || standup.Dial == nil || standup.Dial.Pin != "123456" {
+			t.Fatalf("files %+v dial %+v", standup.Files, standup.Dial)
+		}
+		if !events[1].AllDay || !events[1].Tentative || !events[1].Start.Equal(time.Date(2026, 11, 6, 0, 0, 0, 0, time.UTC)) {
+			t.Fatalf("offsite: %+v", events[1])
+		}
+	}
+	if tokens.Load() != 1 {
+		t.Fatalf("access token fetched %d times, want once", tokens.Load())
+	}
+	if _, err := newCalendarHub(calendarConfig{Feeds: []calendarFeed{{Name: "x", Google: &calendarGoogle{ClientID: "id"}}}}); err == nil {
+		t.Fatal("google feed without a refresh token was accepted")
+	}
+}
+
+func TestCalendarMarkMovedFlagsOnlyTimeChanges(t *testing.T) {
+	now := time.Date(2026, 11, 4, 12, 0, 0, 0, time.UTC)
+	at := func(h int) time.Time { return now.Add(time.Duration(h) * time.Hour) }
+	state := calendarFeedState{}
+	first := []calendarEvent{
+		{Name: "Sync", uid: "sync", Start: at(2), End: at(3)},
+		{Name: "Weekly", uid: "weekly", Start: at(4), End: at(5)},
+		{Name: "Weekly", uid: "weekly", Start: at(28), End: at(29)},
+	}
+	state.markMoved(first, now)
+	state.events = first
+	if !first[0].Changed.IsZero() {
+		t.Fatal("first fetch flagged a move")
+	}
+	// Notes change (an RSVP), Weekly instances shift: neither is a move we can tell
+	second := []calendarEvent{
+		{Name: "Sync", uid: "sync", Start: at(2), End: at(3), Notes: "Alice accepted"},
+		{Name: "Weekly", uid: "weekly", Start: at(5), End: at(6)},
+		{Name: "Weekly", uid: "weekly", Start: at(29), End: at(30)},
+	}
+	state.markMoved(second, now.Add(time.Minute))
+	state.events = second
+	for _, event := range second {
+		if !event.Changed.IsZero() {
+			t.Fatalf("%s flagged without a single-uid time change", event.Name)
+		}
+	}
+	third := []calendarEvent{{Name: "Sync", uid: "sync", Start: at(3), End: at(4)}}
+	state.markMoved(third, now.Add(2*time.Minute))
+	state.events = third
+	if !third[0].Changed.Equal(now.Add(2 * time.Minute)) {
+		t.Fatalf("move not flagged: %v", third[0].Changed)
+	}
+	later := []calendarEvent{{Name: "Sync", uid: "sync", Start: at(3), End: at(4)}}
+	state.markMoved(later, now.Add(time.Hour))
+	if !later[0].Changed.Equal(now.Add(2 * time.Minute)) {
+		t.Fatal("the move was forgotten on the next fetch")
+	}
+	state.markMoved(later, now.Add(80*time.Hour))
+	if !later[0].Changed.IsZero() {
+		t.Fatal("a move older than 72 hours is still flagged")
 	}
 }

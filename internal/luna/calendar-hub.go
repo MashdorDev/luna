@@ -79,11 +79,18 @@ type calendarEvent struct {
 	Location  string
 	Notes     string
 	Tentative bool
+	// Only the Calendar API reports guests and Dor's own answer; iCal feeds leave these empty
+	Attendees []calendarAttendee
+	Response  string
+	Open      string
+	Files     []calendarFile
+	Dial      *calendarDial
+	Recurring bool
 	// When the hub saw this meeting move to a new time. The feeds' own last-modified
 	// stamps change on every RSVP, so they cannot tell a move from an answer.
 	Changed time.Time
 	uid     string
-	remind    bool
+	remind  bool
 }
 
 type calendarInfo struct {
@@ -308,6 +315,38 @@ type calendarRaw struct {
 	start, end                               time.Time
 	allDay                                   bool
 	link                                     string
+	attendees                                []calendarAttendee
+	response, open                           string
+	files                                    []calendarFile
+	dial                                     *calendarDial
+	recurring                                bool
+}
+
+// A file attached to the invite, usually a Google Doc for the meeting
+type calendarFile struct {
+	Title string `json:"title"`
+	URL   string `json:"url"`
+	Icon  string `json:"icon,omitempty"`
+}
+
+// The phone way into a video call
+type calendarDial struct {
+	Number string `json:"number"`
+	URI    string `json:"uri"`
+	Pin    string `json:"pin,omitempty"`
+}
+
+// A guest as the Calendar API reports them. Status is accepted, declined, tentative
+// or needsAction (no answer yet).
+type calendarAttendee struct {
+	Name      string `json:"name,omitempty"`
+	Email     string `json:"email,omitempty"`
+	Status    string `json:"status,omitempty"`
+	Organizer bool   `json:"organizer,omitempty"`
+	Optional  bool   `json:"optional,omitempty"`
+	Self      bool   `json:"self,omitempty"`
+	// What they wrote with their answer
+	Comment string `json:"comment,omitempty"`
 }
 
 func (hub *calendarHub) fetchFeed(index int) ([]calendarEvent, error) {
@@ -348,6 +387,8 @@ func (hub *calendarHub) fetchFeed(index int) ([]calendarEvent, error) {
 		event.Location = strings.TrimSpace(raw.location)
 		event.Notes = calendarPlainText(raw.description)
 		event.Link = raw.link
+		event.Attendees, event.Response, event.Open = raw.attendees, raw.response, raw.open
+		event.Files, event.Dial, event.Recurring = raw.files, raw.dial, raw.recurring
 		if event.Link == "" {
 			event.Link = calendarLinkPattern.FindString(event.Location)
 		}
@@ -452,25 +493,58 @@ func (hub *calendarHub) fetchGoogle(index int) ([]calendarRaw, error) {
 		if kind := item.Get("eventType").String(); kind != "" && kind != "default" && kind != "fromGmail" {
 			continue
 		}
-		declined := false
-		for _, attendee := range item.Get("attendees").Array() {
-			if attendee.Get("self").Bool() && attendee.Get("responseStatus").String() == "declined" {
-				declined = true
-			}
-		}
-		if declined {
-			continue
-		}
 		raw := calendarRaw{
 			name: item.Get("summary").String(), uid: item.Get("id").String(), status: item.Get("status").String(),
 			location: item.Get("location").String(), description: item.Get("description").String(),
-			link: item.Get("hangoutLink").String(),
+			link: item.Get("hangoutLink").String(), open: item.Get("htmlLink").String(),
+		}
+		account := ""
+		for _, entry := range item.Get("attendees").Array() {
+			if entry.Get("resource").Bool() {
+				continue // meeting rooms
+			}
+			attendee := calendarAttendee{
+				Name: entry.Get("displayName").String(), Email: entry.Get("email").String(), Status: entry.Get("responseStatus").String(),
+				Organizer: entry.Get("organizer").Bool(), Optional: entry.Get("optional").Bool(), Self: entry.Get("self").Bool(),
+				Comment: entry.Get("comment").String(),
+			}
+			if attendee.Self {
+				raw.response, account = attendee.Status, attendee.Email
+			}
+			raw.attendees = append(raw.attendees, attendee)
+		}
+		if raw.response == "declined" {
+			continue
+		}
+		// Someone else's event with no guest list still has an organizer worth showing
+		if len(raw.attendees) == 0 && !item.Get("organizer.self").Bool() && item.Get("organizer.email").String() != "" {
+			raw.attendees = []calendarAttendee{{
+				Name: item.Get("organizer.displayName").String(), Email: item.Get("organizer.email").String(), Organizer: true,
+			}}
+		}
+		if account == "" && item.Get("organizer.self").Bool() {
+			account = item.Get("organizer.email").String()
+		}
+		// Google opens the event in whichever account is signed in first unless told which
+		if raw.open != "" && account != "" {
+			raw.open += "&authuser=" + url.QueryEscape(account)
 		}
 		for _, entry := range item.Get("conferenceData.entryPoints").Array() {
-			if raw.link == "" && entry.Get("entryPointType").String() == "video" {
-				raw.link = entry.Get("uri").String()
+			switch entry.Get("entryPointType").String() {
+			case "video":
+				if raw.link == "" {
+					raw.link = entry.Get("uri").String()
+				}
+			case "phone":
+				if raw.dial == nil {
+					raw.dial = &calendarDial{Number: entry.Get("label").String(), URI: entry.Get("uri").String(), Pin: entry.Get("pin").String()}
+				}
 			}
 		}
+		for _, file := range item.Get("attachments").Array() {
+			raw.files = append(raw.files, calendarFile{Title: file.Get("title").String(), URL: file.Get("fileUrl").String(), Icon: file.Get("iconLink").String()})
+		}
+		raw.recurring = item.Get("recurringEventId").String() != ""
 		if day := item.Get("start.date").String(); day != "" {
 			raw.allDay = true
 			raw.start, _ = time.Parse(time.DateOnly, day)
@@ -504,20 +578,26 @@ func (hub *calendarHub) Events(from, to time.Time) []calendarEvent {
 // calendarEntry is an event as the page scripts read it. All-day events carry dates
 // instead of times so each viewer places them in their own day.
 type calendarEntry struct {
-	Name      string   `json:"name"`
-	Start     string   `json:"start,omitempty"`
-	End       string   `json:"end,omitempty"`
-	Day       string   `json:"day,omitempty"`
-	EndDay    string   `json:"endDay,omitempty"`
-	Calendars []string `json:"calendars"`
-	Holiday   bool     `json:"holiday,omitempty"`
-	Link      string   `json:"link,omitempty"`
-	Location  string   `json:"location,omitempty"`
-	Notes     string   `json:"notes,omitempty"`
-	Quiet     bool     `json:"quiet,omitempty"`
-	Tentative bool     `json:"tentative,omitempty"`
-	Changed   string   `json:"changed,omitempty"`
-	Color     int      `json:"color"`
+	Name      string             `json:"name"`
+	Start     string             `json:"start,omitempty"`
+	End       string             `json:"end,omitempty"`
+	Day       string             `json:"day,omitempty"`
+	EndDay    string             `json:"endDay,omitempty"`
+	Calendars []string           `json:"calendars"`
+	Holiday   bool               `json:"holiday,omitempty"`
+	Link      string             `json:"link,omitempty"`
+	Location  string             `json:"location,omitempty"`
+	Notes     string             `json:"notes,omitempty"`
+	Quiet     bool               `json:"quiet,omitempty"`
+	Tentative bool               `json:"tentative,omitempty"`
+	Changed   string             `json:"changed,omitempty"`
+	Attendees []calendarAttendee `json:"attendees,omitempty"`
+	Response  string             `json:"response,omitempty"`
+	Open      string             `json:"open,omitempty"`
+	Files     []calendarFile     `json:"files,omitempty"`
+	Dial      *calendarDial      `json:"dial,omitempty"`
+	Recurring bool               `json:"recurring,omitempty"`
+	Color     int                `json:"color"`
 }
 
 // JSON is what the details panel opens with
@@ -538,6 +618,8 @@ func (hub *calendarHub) Entries(from, to time.Time) []calendarEntry {
 		entries[i] = calendarEntry{
 			Name: event.Name, Calendars: event.Calendars, Holiday: event.Holiday, Link: event.Link, Location: event.Location, Notes: event.Notes, Color: colors[event.Calendars[0]],
 			Quiet: !event.remind || event.Holiday, Tentative: event.Tentative,
+			Attendees: event.Attendees, Response: event.Response, Open: event.Open,
+			Files: event.Files, Dial: event.Dial, Recurring: event.Recurring,
 			Start: event.Start.Format(time.RFC3339), End: event.End.Format(time.RFC3339),
 		}
 		order[i] = event.Start
@@ -591,6 +673,16 @@ func mergeCalendarEvents(events []calendarEvent) []calendarEvent {
 				merged[last].Notes = event.Notes
 			}
 			merged[last].Tentative = merged[last].Tentative && event.Tentative
+			if len(merged[last].Attendees) == 0 {
+				merged[last].Attendees, merged[last].Response, merged[last].Open = event.Attendees, event.Response, event.Open
+			}
+			if len(merged[last].Files) == 0 {
+				merged[last].Files = event.Files
+			}
+			if merged[last].Dial == nil {
+				merged[last].Dial = event.Dial
+			}
+			merged[last].Recurring = merged[last].Recurring || event.Recurring
 			if event.Changed.After(merged[last].Changed) {
 				merged[last].Changed = event.Changed
 			}

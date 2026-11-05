@@ -562,7 +562,8 @@ function countdown(start, end) {
     if (now >= end) return 'Ended';
     if (now >= start) return `Happening now, ${duration(end - now)} left`;
     if (start - now < 24 * 60 * 60 * 1000) return `Starts in ${duration(start - now)}`;
-    return `Starts in ${Math.round((start - now) / 86400000)} days`;
+    const days = Math.round((start - now) / 86400000);
+    return `Starts in ${days} ${days === 1 ? 'day' : 'days'}`;
 }
 
 function section(label, ...children) {
@@ -578,6 +579,61 @@ function joinLabel(link) {
     if (host.includes('teams.')) return 'Join Teams';
     if (host.includes('discord')) return 'Open Discord';
     return `Join on ${host}`;
+}
+
+const ANSWERS = {
+    accepted: { word: 'Going', you: 'You are going', cls: 'yes' },
+    tentative: { word: 'Maybe', you: 'You said maybe', cls: 'maybe' },
+    declined: { word: 'Not going', you: 'You declined', cls: 'no' },
+    needsAction: { word: 'No reply', you: 'You have not answered', cls: 'wait' },
+};
+const ANSWER_ORDER = ['accepted', 'tentative', 'needsAction', 'declined'];
+
+function link(className, text, href) {
+    const node = element('a', className, text);
+    node.href = href;
+    if (/^https?:/i.test(href)) {
+        node.target = '_blank';
+        node.rel = 'noreferrer';
+    }
+    return node;
+}
+
+// Who is invited and what each answered, organizer first
+function peopleSection(event) {
+    const answerOf = (person) => person.status || 'needsAction';
+    const people = [...event.attendees].sort((a, b) => Number(!!b.organizer) - Number(!!a.organizer)
+        || ANSWER_ORDER.indexOf(answerOf(a)) - ANSWER_ORDER.indexOf(answerOf(b)));
+    const tally = people.length < 2 ? [] : ANSWER_ORDER
+        .map((status) => [status, people.filter((person) => answerOf(person) === status).length])
+        .filter(([, n]) => n)
+        .map(([status, n]) => `${n} ${ANSWERS[status].word.toLowerCase()}`);
+    const list = element('ul', 'cal-dpeople');
+    people.forEach((person) => {
+        const answer = ANSWERS[answerOf(person)] || ANSWERS.needsAction;
+        const row = element('li');
+        const name = person.name || (person.email || '?').split('@')[0];
+        row.append(element('span', `cal-dav ${answer.cls}`, name.slice(0, 1).toUpperCase()));
+        const who = element('span', 'cal-dwho');
+        const top = element('span', 'cal-dname');
+        top.append(element('b', '', person.self ? `${name} (you)` : name));
+        if (person.organizer) top.append(element('em', '', 'Organizer'));
+        if (person.optional) top.append(element('em', '', 'Optional'));
+        who.append(top);
+        if (person.email && person.email !== name) {
+            who.append(person.self ? element('small', '', person.email) : link('cal-dmail', person.email, `mailto:${person.email}`));
+        }
+        if (person.comment) who.append(element('q', '', person.comment));
+        row.append(who, element('span', `cal-dans ${answer.cls}`, person.status ? answer.word : ''));
+        list.append(row);
+    });
+    const others = people.filter((person) => !person.self && person.email).map((person) => person.email);
+    const label = element('div', 'cal-dlabel');
+    label.append(`People${tally.length ? `, ${tally.join(', ')}` : ''}`);
+    if (others.length > 1) label.append(' ', link('cal-dmail', 'Email everyone', `mailto:${others.join(',')}?subject=${encodeURIComponent(event.name)}`));
+    const node = element('div', 'cal-dsec');
+    node.append(label, list);
+    return node;
 }
 
 let dialog = null;
@@ -601,7 +657,11 @@ function openDetails(event, root) {
     head.append(title, close);
     const nodes = [head];
     const chips = element('div', 'cal-dchips');
-    if (event.tentative) chips.append(element('span', 'cal-dchip', 'Tentative'));
+    if (event.response) {
+        const answer = ANSWERS[event.response] || ANSWERS.needsAction;
+        chips.append(element('span', `cal-dchip ${answer.cls}`, answer.you));
+    } else if (event.tentative) chips.append(element('span', 'cal-dchip', 'Tentative'));
+    if (event.recurring) chips.append(element('span', 'cal-dchip', 'Repeats'));
     if (event.changed) chips.append(element('span', 'cal-dchip warn', `Moved ${ago(new Date(event.changed))}`));
     if (chips.childNodes.length) nodes.push(chips);
 
@@ -645,7 +705,7 @@ function openDetails(event, root) {
     cals.append(element('i'), event.calendars.join(', '));
     nodes.push(cals);
 
-    if (event.link) {
+    if (event.link || event.open) {
         const actions = element('div', 'cal-dactions');
         const join = element('a', 'cal-djoin', joinLabel(event.link));
         join.href = event.link;
@@ -656,8 +716,15 @@ function openDetails(event, root) {
         copy.addEventListener('click', () => {
             navigator.clipboard?.writeText(event.link).then(() => { copy.textContent = 'Copied'; }, () => { copy.textContent = 'Copy failed'; });
         });
-        actions.append(join, copy);
+        if (event.link) actions.append(join, copy);
+        // Answering goes through Google, where the invite lives; Luna only reads calendars
+        if (event.open) actions.append(link('cal-dbtn', event.response ? 'Change answer in Google' : 'Open in Google Calendar', event.open));
         nodes.push(actions);
+        if (event.dial) {
+            const dial = element('div', 'cal-ddial');
+            dial.append('Or call ', link('', event.dial.number, event.dial.uri.split(',')[0]), event.dial.pin ? `, PIN ${event.dial.pin}#` : '');
+            nodes.push(dial);
+        }
     }
 
     if (event.location && event.location !== event.link) {
@@ -671,6 +738,25 @@ function openDetails(event, root) {
             where.append(' ', map);
         }
         nodes.push(section('Where', where));
+    }
+
+    if (event.attendees?.length) nodes.push(peopleSection(event));
+    if (event.files?.length) {
+        const files = element('ul', 'cal-dfiles');
+        event.files.forEach((file) => {
+            const item = element('li');
+            const anchor = link('', '', file.url);
+            if (file.icon) {
+                const icon = element('img');
+                icon.src = file.icon;
+                icon.alt = '';
+                anchor.append(icon);
+            }
+            anchor.append(file.title || 'Attachment');
+            item.append(anchor);
+            files.append(item);
+        });
+        nodes.push(section('Files', files));
     }
 
     if (start) {

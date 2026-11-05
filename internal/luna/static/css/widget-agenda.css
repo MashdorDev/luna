@@ -138,6 +138,30 @@
 .cal-dsec .cal-dnotes { margin: 0; padding: 0; border: 0; }
 .cal-dclash { margin: 0; padding-left: 18px; color: var(--ck-warn); }
 .cal-dmap { font-size: 13px; }
+.cal-dchip.yes { background: color-mix(in srgb, var(--color-positive) 22%, transparent); color: var(--color-text-highlight); }
+.cal-dchip.maybe, .cal-dchip.wait { background: color-mix(in srgb, var(--ck-warn) 22%, transparent); color: var(--color-text-highlight); }
+.cal-dchip.no { background: color-mix(in srgb, var(--color-negative) 22%, transparent); color: var(--color-text-highlight); }
+.cal-ddial { margin-top: 8px; font-size: 13px; color: var(--color-text-subdue); font-variant-numeric: tabular-nums; }
+.cal-dpeople { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 8px; max-height: 40vh; overflow-y: auto; }
+.cal-dpeople li { display: grid; grid-template-columns: 28px minmax(0, 1fr) auto; gap: 10px; align-items: center; }
+.cal-dav { width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; font-size: 12px; font-weight: 600; background: var(--color-widget-background-highlight); color: var(--color-text-highlight);
+    box-shadow: inset 0 0 0 2px var(--ring, transparent); }
+.cal-dav.yes { --ring: var(--color-positive); }
+.cal-dav.maybe, .cal-dav.wait { --ring: var(--ck-warn); }
+.cal-dav.no { --ring: var(--color-negative); opacity: .6; }
+.cal-dwho { display: flex; flex-direction: column; min-width: 0; font-size: 13px; }
+.cal-dname { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; }
+.cal-dname b { font-weight: 500; color: var(--color-text-highlight); }
+.cal-dname em { font-style: normal; font-size: 11px; padding: 0 6px; border-radius: 8px; background: var(--color-widget-background-highlight); color: var(--color-text-base); }
+.cal-dwho small, .cal-dmail { font-size: 12px; color: var(--color-text-subdue); overflow-wrap: anywhere; }
+.cal-dwho q { font-size: 12px; font-style: italic; color: var(--color-text-base); }
+.cal-dans { font-size: 12px; white-space: nowrap; }
+.cal-dans.yes { color: var(--color-positive); }
+.cal-dans.maybe, .cal-dans.wait { color: var(--ck-warn); }
+.cal-dans.no { color: var(--color-negative); }
+.cal-dfiles { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
+.cal-dfiles a { display: inline-flex; align-items: center; gap: 6px; }
+.cal-dfiles img { width: 16px; height: 16px; }
 .cal-dremind { margin-top: 12px; font-size: 12px; color: var(--color-text-subdue); }
 .cal-bell { margin-left: auto; border: 0; background: none; padding: 0; font: inherit; font-size: 12px; color: var(--color-primary); cursor: pointer; }
 .cal-bell.on { color: var(--color-text-subdue); cursor: default; }

@@ -142,7 +142,11 @@ func TestCalendarHubReadsGoogleCalendarAPI(t *testing.T) {
 				return
 			}
 			w.Write([]byte(`{"items":[
-				{"summary":"Standup","status":"confirmed","start":{"dateTime":"2026-11-05T10:00:00-05:00"},"end":{"dateTime":"2026-11-05T10:15:00-05:00"},"hangoutLink":"https://meet.google.com/abc-defg-hij","updated":"2026-11-04T12:00:00Z"},
+				{"summary":"Standup","status":"confirmed","start":{"dateTime":"2026-11-05T10:00:00-05:00"},"end":{"dateTime":"2026-11-05T10:15:00-05:00"},"hangoutLink":"https://meet.google.com/abc-defg-hij","updated":"2026-11-04T12:00:00Z",
+					"htmlLink":"https://www.google.com/calendar/event?eid=abc","recurringEventId":"series",
+					"attendees":[{"email":"craig@example.com","displayName":"Craig","organizer":true,"responseStatus":"accepted"},{"email":"dor@losttribe.org","self":true,"responseStatus":"tentative","comment":"may be late"},{"email":"room@resource.calendar.google.com","resource":true,"responseStatus":"accepted"}],
+					"attachments":[{"title":"Agenda","fileUrl":"https://docs.google.com/document/d/1","iconLink":"https://icon"}],
+					"conferenceData":{"entryPoints":[{"entryPointType":"video","uri":"https://meet.google.com/abc-defg-hij"},{"entryPointType":"phone","uri":"tel:+1-555-0100","label":"+1 555-0100","pin":"123456"}]}},
 				{"summary":"Offsite","status":"tentative","start":{"date":"2026-11-06"},"end":{"date":"2026-11-07"}},
 				{"summary":"Skipped","start":{"dateTime":"2026-11-05T12:00:00Z"},"end":{"dateTime":"2026-11-05T13:00:00Z"},"attendees":[{"self":true,"responseStatus":"declined"}]},
 				{"summary":"Home","eventType":"workingLocation","start":{"date":"2026-11-05"},"end":{"date":"2026-11-06"}},
@@ -173,6 +177,16 @@ func TestCalendarHubReadsGoogleCalendarAPI(t *testing.T) {
 		}
 		if events[0].Link != "https://meet.google.com/abc-defg-hij" || events[0].End.Sub(events[0].Start) != 15*time.Minute {
 			t.Fatalf("standup: %+v", events[0])
+		}
+		standup := events[0]
+		if len(standup.Attendees) != 2 || standup.Response != "tentative" || standup.Attendees[1].Comment != "may be late" || !standup.Attendees[0].Organizer {
+			t.Fatalf("guests: %+v, answer %q", standup.Attendees, standup.Response)
+		}
+		if standup.Open != "https://www.google.com/calendar/event?eid=abc&authuser=dor%40losttribe.org" || !standup.Recurring {
+			t.Fatalf("open %q recurring %v", standup.Open, standup.Recurring)
+		}
+		if len(standup.Files) != 1 || standup.Files[0].Title != "Agenda" || standup.Dial == nil || standup.Dial.Pin != "123456" {
+			t.Fatalf("files %+v dial %+v", standup.Files, standup.Dial)
 		}
 		if !events[1].AllDay || !events[1].Tentative || !events[1].Start.Equal(time.Date(2026, 11, 6, 0, 0, 0, 0, time.UTC)) {
 			t.Fatalf("offsite: %+v", events[1])

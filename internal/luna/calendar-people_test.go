@@ -74,15 +74,18 @@ func TestCalendarRespondChangesOnlyDorsAnswer(t *testing.T) {
 	}
 }
 
-func TestCalendarPhotoFromSkipsLetterAvatars(t *testing.T) {
-	body := []byte(`{"results":[
-		{"person":{"emailAddresses":[{"value":"Other@x.org"}],"photos":[{"url":"https://p/other"}]}},
-		{"person":{"emailAddresses":[{"value":"Gus@x.org"}],"photos":[{"url":"https://p/letter","default":true},{"url":"https://p/gus"}]}}
-	]}`)
-	if got := calendarPhotoFrom(body, "gus@x.org"); got != "https://p/gus" {
-		t.Fatalf("got %q", got)
+func TestCalendarPhotosFromReadsEveryListShape(t *testing.T) {
+	found := map[string]string{}
+	next := calendarPhotosFrom([]byte(`{"people":[
+		{"emailAddresses":[{"value":"Gus@x.org"},{"value":"gus@home.test"}],"photos":[{"url":"https://p/letter","default":true},{"url":"https://p/gus"}]},
+		{"emailAddresses":[{"value":"or@x.org"}],"photos":[{"url":"https://p/or-letter","default":true}]}
+	],"nextPageToken":"more"}`), found)
+	calendarPhotosFrom([]byte(`{"connections":[{"emailAddresses":[{"value":"idan@y.test"}],"photos":[{"url":"https://p/idan"}]}]}`), found)
+	calendarPhotosFrom([]byte(`{"otherContacts":[{"emailAddresses":[{"value":"gus@x.org"}],"photos":[{"url":"https://p/other"}]}]}`), found)
+	if next != "more" || found["gus@x.org"] != "https://p/gus" || found["gus@home.test"] != "https://p/gus" || found["idan@y.test"] != "https://p/idan" {
+		t.Fatalf("next %q found %v", next, found)
 	}
-	if got := calendarPhotoFrom([]byte(`{"people":[{"person":{"emailAddresses":[{"value":"a@x.org"}],"photos":[{"url":"https://p/a","default":true}]}}]}`), "a@x.org"); got != "" {
-		t.Fatalf("letter avatar used: %q", got)
+	if _, ok := found["or@x.org"]; ok {
+		t.Fatal("letter avatar used")
 	}
 }

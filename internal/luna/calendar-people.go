@@ -14,148 +14,126 @@ import (
 
 var calendarPeopleAPI = "https://people.googleapis.com/v1"
 
-const (
-	// A photo, or the lack of one, is looked up again after this long
-	calendarPhotoFor = 24 * time.Hour
-	// Lookups per feed per fetch, so a meeting with 200 guests does not stall a tick
-	calendarPhotoBatch = 40
-)
+// The directory and contact lists are read again after this long
+const calendarPhotoFor = 24 * time.Hour
 
-type calendarPhoto struct {
-	url     string
-	checked time.Time
+// A person as the People API lists them
+type calendarPerson struct {
+	Photos []struct {
+		URL     string `json:"url"`
+		Default bool   `json:"default"`
+	} `json:"photos"`
+	EmailAddresses []struct {
+		Value string `json:"value"`
+	} `json:"emailAddresses"`
 }
 
-// lookupPhotos finds profile pictures for the guests of a Google feed's events: the
-// Workspace directory first, then Dor's contacts and the people Dor has emailed. Needs the
-// contacts and directory scopes; without them each lookup fails quietly and is not retried
-// for a day.
-func (hub *calendarHub) lookupPhotos(index int, events []calendarEvent, now time.Time) {
-	var wanted []string
-	hub.mu.Lock()
-	if hub.photos == nil {
-		hub.photos = map[string]calendarPhoto{}
+// calendarPhotosFrom maps each email of the listed people to their photo, skipping
+// Google's generated letter avatars. Each list names its array differently.
+func calendarPhotosFrom(body []byte, found map[string]string) (next string) {
+	var page struct {
+		People        []calendarPerson `json:"people"`
+		Connections   []calendarPerson `json:"connections"`
+		OtherContacts []calendarPerson `json:"otherContacts"`
+		NextPageToken string           `json:"nextPageToken"`
 	}
-	seen := map[string]bool{}
-	for _, event := range events {
-		for _, attendee := range event.Attendees {
-			email := strings.ToLower(attendee.Email)
-			if email == "" || seen[email] {
-				continue
+	if json.Unmarshal(body, &page) != nil {
+		return ""
+	}
+	for _, person := range append(append(page.People, page.Connections...), page.OtherContacts...) {
+		photo := ""
+		for _, candidate := range person.Photos {
+			if !candidate.Default && candidate.URL != "" {
+				photo = candidate.URL
+				break
 			}
-			seen[email] = true
-			if photo, ok := hub.photos[email]; ok && now.Sub(photo.checked) < calendarPhotoFor {
-				continue
+		}
+		if photo == "" {
+			continue
+		}
+		for _, address := range person.EmailAddresses {
+			if email := strings.ToLower(address.Value); email != "" && found[email] == "" {
+				found[email] = photo
 			}
-			wanted = append(wanted, email)
 		}
 	}
-	hub.mu.Unlock()
-	if len(wanted) > calendarPhotoBatch {
-		wanted = wanted[:calendarPhotoBatch]
+	return page.NextPageToken
+}
+
+// lookupPhotos reads, once a day per feed, the profile pictures of everyone the feed's
+// account can see: its Workspace directory, its contacts and the people it has emailed.
+// One listing each instead of a search per guest, which Google rate limits after a dozen.
+// A list the sign-in has no scope for fails quietly.
+func (hub *calendarHub) lookupPhotos(index int, now time.Time) {
+	hub.mu.Lock()
+	if hub.photos == nil {
+		hub.photos, hub.photosRead = map[string]string{}, map[int]time.Time{}
 	}
-	if len(wanted) == 0 {
+	fresh := now.Sub(hub.photosRead[index]) < calendarPhotoFor
+	if !fresh {
+		hub.photosRead[index] = now
+	}
+	hub.mu.Unlock()
+	if fresh {
 		return
 	}
 	token, err := hub.googleToken(index, now)
 	if err != nil {
 		return
 	}
-	get := func(path string, query url.Values) []byte {
-		request, err := http.NewRequest("GET", calendarPeopleAPI+path+"?"+query.Encode(), nil)
-		if err != nil {
-			return nil
-		}
-		request.Header.Set("Authorization", "Bearer "+token)
-		data, err := cockpitFetch(request)
-		if err != nil {
-			return nil
-		}
-		return []byte(data.Raw)
-	}
-	// Google asks for an empty search first to warm its contact cache
-	get("/people:searchContacts", url.Values{"query": {""}, "readMask": {"names"}})
-	get("/otherContacts:search", url.Values{"query": {""}, "readMask": {"names"}})
+	found := map[string]string{}
 	failures := 0
-	for _, email := range wanted {
-		found := ""
-		for _, source := range []struct{ path, extra string }{
-			{"/people:searchDirectoryPeople", "DIRECTORY_SOURCE_TYPE_DOMAIN_PROFILE"},
-			{"/people:searchContacts", ""},
-			{"/otherContacts:search", ""},
-		} {
-			query := url.Values{"query": {email}, "readMask": {"photos,emailAddresses"}, "pageSize": {"5"}}
-			if source.extra != "" {
-				query.Set("sources", source.extra)
+	lists := []struct {
+		path  string
+		query url.Values
+	}{
+		{"/people:listDirectoryPeople", url.Values{"sources": {"DIRECTORY_SOURCE_TYPE_DOMAIN_PROFILE"}, "readMask": {"photos,emailAddresses"}, "pageSize": {"1000"}}},
+		{"/people/me/connections", url.Values{"personFields": {"photos,emailAddresses"}, "pageSize": {"1000"}}},
+		{"/otherContacts", url.Values{"readMask": {"photos,emailAddresses"}, "pageSize": {"1000"}}},
+	}
+	for _, list := range lists {
+		// Pages are capped so a huge directory cannot hold the tick
+		for page, next := 0, ""; page < 5; page++ {
+			if next != "" {
+				list.query.Set("pageToken", next)
 			}
-			body := get(source.path, query)
-			if body == nil {
+			request, err := http.NewRequest("GET", calendarPeopleAPI+list.path+"?"+list.query.Encode(), nil)
+			if err != nil {
+				break
+			}
+			request.Header.Set("Authorization", "Bearer "+token)
+			data, err := cockpitFetch(request)
+			if err != nil {
 				failures++
-				continue
+				break
 			}
-			found = calendarPhotoFrom(body, email)
-			if found != "" {
+			if next = calendarPhotosFrom([]byte(data.Raw), found); next == "" {
 				break
 			}
 		}
-		hub.mu.Lock()
-		if found != "" && hub.photos[email].url != found {
-			hub.version.Add(1)
-		}
-		hub.photos[email] = calendarPhoto{url: found, checked: now}
-		hub.mu.Unlock()
 	}
-	if failures == len(wanted)*3 {
+	if failures == len(lists) {
 		slog.Warn("Calendar guest photos unavailable, the Google sign-in may lack the contacts scope", "calendar", hub.feeds[index].Name)
 	}
-}
-
-// A person in a People API search answer
-type calendarPeopleMatch struct {
-	Person struct {
-		Photos []struct {
-			URL     string `json:"url"`
-			Default bool   `json:"default"`
-		} `json:"photos"`
-		EmailAddresses []struct {
-			Value string `json:"value"`
-		} `json:"emailAddresses"`
-	} `json:"person"`
-}
-
-// calendarPhotoFrom picks the photo of the person whose email matches, skipping
-// Google's generated letter avatars. Directory search answers in "people", contact
-// searches in "results".
-func calendarPhotoFrom(body []byte, email string) string {
-	var result struct {
-		People  []calendarPeopleMatch `json:"people"`
-		Results []calendarPeopleMatch `json:"results"`
-	}
-	if json.Unmarshal(body, &result) != nil {
-		return ""
-	}
-	for _, match := range append(result.People, result.Results...) {
-		owns := false
-		for _, address := range match.Person.EmailAddresses {
-			owns = owns || strings.EqualFold(address.Value, email)
-		}
-		if !owns {
-			continue
-		}
-		for _, photo := range match.Person.Photos {
-			if !photo.Default && photo.URL != "" {
-				return photo.URL
-			}
+	hub.mu.Lock()
+	changed := false
+	for email, photo := range found {
+		if hub.photos[email] != photo {
+			hub.photos[email] = photo
+			changed = true
 		}
 	}
-	return ""
+	if changed {
+		hub.version.Add(1)
+	}
+	hub.mu.Unlock()
 }
 
 // photoFor is the cached picture for an email, or empty
 func (hub *calendarHub) photoFor(email string) string {
 	hub.mu.Lock()
 	defer hub.mu.Unlock()
-	return hub.photos[strings.ToLower(email)].url
+	return hub.photos[strings.ToLower(email)]
 }
 
 var calendarAnswers = map[string]bool{"accepted": true, "tentative": true, "declined": true}

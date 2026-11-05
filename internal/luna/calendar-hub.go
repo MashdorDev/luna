@@ -125,8 +125,10 @@ type calendarHub struct {
 	mu      sync.Mutex
 	states  []calendarFeedState
 	version atomic.Int64
-	// Guests' profile pictures by email, from the People API
-	photos map[string]calendarPhoto
+	// Guests' profile pictures by email, from the People API, and when each feed's
+	// account was last listed
+	photos     map[string]string
+	photosRead map[int]time.Time
 }
 
 func newCalendarHub(c calendarConfig) (*calendarHub, error) {
@@ -223,7 +225,7 @@ func (hub *calendarHub) tick(now time.Time) {
 			defer wg.Done()
 			events, err := hub.fetchFeed(i)
 			if err == nil && hub.feeds[i].Google != nil && !hub.feeds[i].Google.Birthdays {
-				defer hub.lookupPhotos(i, events, now)
+				defer hub.lookupPhotos(i, now)
 			}
 			hub.mu.Lock()
 			defer hub.mu.Unlock()

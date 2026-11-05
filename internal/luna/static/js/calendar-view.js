@@ -191,9 +191,25 @@ function opener(tag, className, event) {
     return node;
 }
 
-function weekData(root, events, shown) {
-    const now = new Date();
-    const days = [...Array(Number(root.dataset.calDays) || 7)].map((_, i) => addDays(now, i));
+// The feeds reach 15 days ahead, so this week and next
+const WEEKS = 2;
+let weekOffset = 0;
+
+function mondayOf(date) {
+    const day = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+    return addDays(day, -((day.getDay() + 6) % 7));
+}
+
+// The week view runs Monday to Sunday; the list runs from today
+function viewDays(root, view, now) {
+    if (view === 'week') {
+        const monday = addDays(mondayOf(now), weekOffset * 7);
+        return [...Array(7)].map((_, i) => addDays(monday, i));
+    }
+    return [...Array(Number(root.dataset.calDays) || 7)].map((_, i) => addDays(now, i));
+}
+
+function weekData(root, events, shown, days) {
     const keys = days.map(dayKey);
     const timed = keys.map(() => []);
     const allDay = keys.map(() => []);
@@ -242,7 +258,8 @@ function buildSummary(root, data) {
     if (count) parts.push(element('span', '', `Busiest ${data.days[busiest].toLocaleDateString(undefined, { weekday: 'long' })}, ${hoursText(data.stats[busiest].minutes)}`));
     if (clashes.length) parts.push(element('span', 'warn', `${clashes.length} overlapping`));
     const now = new Date();
-    const next = data.timed.flat().filter((item) => item.end > now && !item.event.quiet).sort((a, b) => a.start - b.start)[0];
+    // Next week's view is for planning; Now and Next stay on this week
+    const next = weekOffset ? null : data.timed.flat().filter((item) => item.end > now && !item.event.quiet).sort((a, b) => a.start - b.start)[0];
     if (next) {
         const button = opener('button', 'cw-next', next.event);
         button.append(element('span', '', next.start <= now ? 'Now: ' : 'Next: '), element('b', '', next.event.name));
@@ -265,9 +282,10 @@ function buildWeek(root, data) {
     const span = last - first;
 
     const grid = root.querySelector('[data-cal-grid]');
+    const today = dayKey(new Date());
     const nodes = [element('div', 'cw-corner')];
     days.forEach((day, i) => {
-        const head = element('div', 'cw-head' + (i === 0 ? ' today' : ''));
+        const head = element('div', 'cw-head' + (dayKey(day) === today ? ' today' : ''));
         const date = element('div', 'cw-date');
         date.append(element('b', '', day.toLocaleDateString(undefined, { weekday: 'short' })), element('span', '', String(day.getDate())));
         head.append(date, element('small', stats[i].clashes ? 'warn' : '', dayStats(stats[i])));
@@ -293,7 +311,8 @@ function buildWeek(root, data) {
     }
     nodes.push(hours);
     timed.forEach((list, i) => {
-        const column = element('div', 'cw-day' + (i === 0 ? ' today' : ''));
+        const isToday = dayKey(days[i]) === today;
+        const column = element('div', 'cw-day' + (isToday ? ' today' : ''));
         list.forEach((item) => {
             const { event } = item;
             const flags = [event.tentative && 'tent', event.changed && 'moved', item.clash && 'clash', item.to - item.from < 45 && 'short'].filter(Boolean).join(' ');
@@ -313,7 +332,7 @@ function buildWeek(root, data) {
             block.append(name, time, element('span', 'cw-where', event.location && !/^https?:/i.test(event.location) ? event.location : event.calendars.join(', ')));
             column.append(block);
         });
-        if (i === 0) {
+        if (isToday) {
             const line = element('i', 'cw-now');
             line.append(element('span', '', shortClock(new Date())));
             column.append(line);
@@ -408,12 +427,24 @@ function paintWeek(root) {
     // so "Now" and "Next" move on the moment a meeting starts or ends.
     const passed = events.reduce((sum, event) => sum + (new Date(event.start) <= now) + (new Date(event.end) <= now), 0);
     // The hour keeps "Moved 5 min ago" from going stale after the day's last meeting
-    const key = [root.dataset.calEvents, dayKey(now), now.getHours(), passed, view, JSON.stringify(choices())].join('#');
+    const days = viewDays(root, view, now);
+    const nav = root.querySelector('[data-cal-weeknav]');
+    setHidden(nav, view !== 'week');
+    if (nav) {
+        const range = `${days[0].toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} - ${days[6]?.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}`;
+        setText(nav.querySelector('[data-cal-week-label]'), `${weekOffset ? 'Next week' : 'This week'}, ${range}`);
+        nav.querySelectorAll('[data-cal-week-step]').forEach((button) => {
+            const target = weekOffset + Number(button.dataset.calWeekStep);
+            const off = target < 0 || target >= WEEKS;
+            if (button.disabled !== off) button.disabled = off;
+        });
+    }
+    const key = [root.dataset.calEvents, dayKey(now), now.getHours(), passed, view, weekOffset, JSON.stringify(choices())].join('#');
     // Only the shown view is built, so check that one; the empty week grid in list view
     // otherwise rebuilt the list on every paint, and the observer looped until the tab hung
     const built = view === 'week' ? grid : root.querySelector('[data-cal-list]');
     if (grid.dataset.key !== key || !built?.firstChild) {
-        const data = weekData(root, events, shown);
+        const data = weekData(root, events, shown, days);
         buildSummary(root, data);
         if (view === 'week') buildWeek(root, data);
         else buildList(root, data);
@@ -442,6 +473,12 @@ function paintWeek(root) {
 }
 
 document.addEventListener('click', (click) => {
+    const step = click.target.closest('[data-cal-week-step]');
+    if (step) {
+        weekOffset = Math.min(WEEKS - 1, Math.max(0, weekOffset + Number(step.dataset.calWeekStep)));
+        paint();
+        return;
+    }
     const button = click.target.closest('[data-cal-view]');
     if (!button) return;
     try {

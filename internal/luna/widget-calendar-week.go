@@ -40,8 +40,9 @@ func (widget *calendarWeekWidget) update(ctx context.Context) {
 	}
 	hub := widget.Providers.calendar
 	now := time.Now()
-	// A day either side covers devices up to 14 hours off the server's zone
-	encoded, err := json.Marshal(hub.Entries(now.Add(-24*time.Hour), now.AddDate(0, 0, widget.Days+1)))
+	// The week view runs Monday to Sunday for this week and next, and the list runs from
+	// today, so this covers all the hub has (a day either side covers devices in other zones)
+	encoded, err := json.Marshal(hub.Entries(now.AddDate(0, 0, -calendarLookbackDays), now.AddDate(0, 0, calendarHorizonDays)))
 	if err != nil {
 		widget.withError(err)
 		widget.scheduleNextUpdate()

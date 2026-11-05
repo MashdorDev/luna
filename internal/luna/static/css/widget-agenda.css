@@ -152,6 +152,10 @@
 .cw-next b { margin-left: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cw-next .cw-left { margin-left: 6px; color: var(--color-primary); font-weight: 500; white-space: nowrap; }
 .cw-next:hover { border-color: var(--color-text-subdue); }
+.cw-weeknav { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; font-size: 13px; color: var(--color-text-highlight); font-variant-numeric: tabular-nums; }
+.cw-weeknav[hidden] { display: none; }
+.cw-weeknav button { width: 26px; height: 26px; border: 1px solid var(--color-separator); border-radius: 6px; background: none; font: inherit; font-size: 16px; line-height: 1; color: var(--color-text-base); cursor: pointer; }
+.cw-weeknav button:disabled { opacity: .35; cursor: default; }
 .cw-views { display: inline-flex; border: 1px solid var(--color-separator); border-radius: 6px; overflow: hidden; }
 .cw-views button { padding: 4px 12px; border: 0; background: none; font: inherit; font-size: 13px; color: var(--color-text-subdue); cursor: pointer; }
 .cw-views button + button { border-left: 1px solid var(--color-separator); }

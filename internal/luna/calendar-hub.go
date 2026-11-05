@@ -27,6 +27,8 @@ const (
 	calendarHolidayEvery = 6 * time.Hour
 	calendarRetry        = time.Minute
 	calendarHorizonDays  = 15
+	// The week view starts on Monday, up to 6 days back, plus a day for zones
+	calendarLookbackDays = 8
 	// A meeting moved this recently is flagged, since a moved meeting is easy to miss
 	calendarChangedWithin = 72 * time.Hour
 )
@@ -155,7 +157,7 @@ func newCalendarHub(c calendarConfig) (*calendarHub, error) {
 }
 
 // glance-ical returns 5 events a year ahead by default, so a busy calendar lost meetings
-// next week behind ones next month. One day back keeps meetings that are still going on.
+// next week behind ones next month. The look back keeps this week's earlier days.
 func calendarFeedURL(raw string) string {
 	parsed, err := url.Parse(raw)
 	if err != nil || !parsed.Query().Has("url") {
@@ -164,7 +166,7 @@ func calendarFeedURL(raw string) string {
 	query := parsed.Query()
 	query.Set("limit", "500")
 	query.Set("horizon_days", fmt.Sprint(calendarHorizonDays))
-	query.Set("lookback_days", "1")
+	query.Set("lookback_days", fmt.Sprint(calendarLookbackDays))
 	parsed.RawQuery = query.Encode()
 	return parsed.String()
 }
@@ -428,7 +430,7 @@ func (hub *calendarHub) fetchGoogle(index int) ([]calendarRaw, error) {
 	}
 	query := url.Values{
 		"singleEvents": {"true"}, "orderBy": {"startTime"}, "maxResults": {"500"},
-		"timeMin": {now.AddDate(0, 0, -1).Format(time.RFC3339)},
+		"timeMin": {now.AddDate(0, 0, -calendarLookbackDays).Format(time.RFC3339)},
 		"timeMax": {now.AddDate(0, 0, calendarHorizonDays).Format(time.RFC3339)},
 	}
 	target := calendarGoogleAPI + "/calendars/" + url.PathEscape(hub.feeds[index].Google.Calendar) + "/events?" + query.Encode()

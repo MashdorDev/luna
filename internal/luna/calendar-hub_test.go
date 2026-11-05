@@ -14,7 +14,7 @@ import (
 func TestCalendarFeedURLWidensTheWindow(t *testing.T) {
 	got, _ := url.Parse(calendarFeedURL("http://glance-ical:8076/events?url=https%3A%2F%2Fx.test%2Fa.ics&limit=5&horizon_days=365&lookback_days=0"))
 	query := got.Query()
-	if query.Get("limit") != "500" || query.Get("horizon_days") != "15" || query.Get("lookback_days") != "1" {
+	if query.Get("limit") != "500" || query.Get("horizon_days") != "15" || query.Get("lookback_days") != "8" {
 		t.Fatalf("got %s", got.RawQuery)
 	}
 	if query.Get("url") != "https://x.test/a.ics" {

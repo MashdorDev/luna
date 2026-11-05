@@ -213,7 +213,18 @@ function weekData(root, events, shown, days) {
     const keys = days.map(dayKey);
     const timed = keys.map(() => []);
     const allDay = keys.map(() => []);
+    const marks = keys.map(() => []);
     events.filter((event) => event.calendars.some(shown)).forEach((event) => {
+        // Working location and away label the day instead of sitting in it
+        if (event.marker) {
+            const from = event.day || dayKey(new Date(event.start));
+            const to = event.endDay || dayKey(new Date(new Date(event.end) - 1));
+            keys.forEach((key, i) => {
+                const inside = event.day ? from <= key && key < to : from <= key && key <= to;
+                if (inside && !marks[i].includes(event.marker)) marks[i].push(event.marker);
+            });
+            return;
+        }
         if (event.day) {
             keys.forEach((key, i) => { if (event.day <= key && key < event.endDay) allDay[i].push(event); });
             return;
@@ -241,7 +252,7 @@ function weekData(root, events, shown, days) {
     });
     const meetings = (list) => list.filter((item) => !item.event.quiet);
     const stats = timed.map((list) => ({ count: meetings(list).length, minutes: bookedMinutes(meetings(list)), clashes: list.filter((item) => item.clash).length }));
-    return { days, keys, timed, allDay, stats };
+    return { days, keys, timed, allDay, stats, marks };
 }
 
 function dayStats(stat) {
@@ -288,13 +299,14 @@ function buildWeek(root, data) {
         const date = element('div', 'cw-date');
         date.append(element('b', '', day.toLocaleDateString(undefined, { weekday: 'short' })), element('span', '', String(day.getDate())));
         head.append(date, element('small', stats[i].clashes ? 'warn' : '', dayStats(stats[i])));
+        if (data.marks[i].length) head.append(element('span', 'cw-mark', data.marks[i].join(', ')));
         nodes.push(head);
     });
     nodes.push(element('div', 'cw-corner'));
     allDay.forEach((list) => {
         const cell = element('div', 'cw-allday');
         list.forEach((event) => {
-            const chip = opener('button', `cw-chip cal-c${event.color}${event.holiday ? ' hol' : ''}`, event);
+            const chip = opener('button', `cw-chip cal-c${event.color}${event.holiday ? ' hol' : ''}${event.task ? ' task' : ''}`, event);
             chip.textContent = event.name;
             chip.title = `${event.name}, ${event.calendars.join(', ')}`;
             cell.append(chip);
@@ -380,7 +392,9 @@ function buildList(root, data) {
         const items = [...data.allDay[i].map((event) => ({ event })), ...data.timed[i]];
         const head = element('div', 'cw-lday' + (i === 0 ? ' today' : ''));
         const label = i === 0 ? 'Today' : i === 1 ? 'Tomorrow' : day.toLocaleDateString(undefined, { weekday: 'long' });
-        head.append(element('b', '', `${label}, ${day.toLocaleDateString(undefined, { day: 'numeric', month: 'short' })}`), element('small', data.stats[i].clashes ? 'warn' : '', dayStats(data.stats[i])));
+        const title = element('b', '', `${label}, ${day.toLocaleDateString(undefined, { day: 'numeric', month: 'short' })}`);
+        if (data.marks[i].length) title.append(element('span', 'cw-mark', data.marks[i].join(', ')));
+        head.append(title, element('small', data.stats[i].clashes ? 'warn' : '', dayStats(data.stats[i])));
         nodes.push(head);
         if (!items.length) {
             nodes.push(element('div', 'cw-lfree', 'Nothing booked'));
@@ -390,8 +404,8 @@ function buildList(root, data) {
         const nowAt = i === 0 ? items.findIndex(({ start }) => start && start > now) : -2;
         items.forEach(({ event, start, end, clash }, index) => {
             if (index === nowAt) nodes.push(nowLine(now));
-            const row = opener('button', `cw-lrow cal-c${event.color}${event.holiday ? ' hol' : ''}${end && end < now ? ' past' : ''}`, event);
-            const time = element('span', 'cw-ltime', start ? `${clock(start)} - ${clock(end)}` : 'All day');
+            const row = opener('button', `cw-lrow cal-c${event.color}${event.holiday ? ' hol' : ''}${event.task ? ' task' : ''}${end && end < now ? ' past' : ''}`, event);
+            const time = element('span', 'cw-ltime', start ? `${clock(start)} - ${clock(end)}` : event.task ? 'Due' : 'All day');
             const body = element('span', 'cw-lbody');
             const name = element('b', '', event.name);
             name.dir = 'auto';
@@ -716,6 +730,7 @@ function openDetails(event, root) {
         chips.append(element('span', `cal-dchip ${answer.cls}`, answer.you));
     } else if (event.tentative) chips.append(element('span', 'cal-dchip', 'Tentative'));
     if (event.recurring) chips.append(element('span', 'cal-dchip', 'Repeats'));
+    if (event.task) chips.append(element('span', 'cal-dchip', 'Task'));
     if (event.changed) chips.append(element('span', 'cal-dchip warn', `Moved ${ago(new Date(event.changed))}`));
     if (chips.childNodes.length) nodes.push(chips);
 
@@ -773,7 +788,7 @@ function openDetails(event, root) {
             });
             actions.append(join, copy);
         }
-        if (event.open) actions.append(link('cal-dbtn', 'Open in Google Calendar', event.open));
+        if (event.open) actions.append(link('cal-dbtn', event.task ? 'Open in Google Tasks' : 'Open in Google Calendar', event.open));
         nodes.push(actions);
         if (event.dial) {
             const dial = element('div', 'cal-ddial');

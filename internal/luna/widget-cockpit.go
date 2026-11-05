@@ -23,9 +23,9 @@ import (
 var cockpitWidgetTemplate = mustParseTemplate("cockpit.html", "widget-base.html")
 
 const (
-	cockpitQuotesEvery    = 15 * time.Minute
-	cockpitLookupsEvery   = time.Hour
-	cockpitDrawerErrors   = 10
+	cockpitQuotesEvery  = 15 * time.Minute
+	cockpitLookupsEvery = time.Hour
+	cockpitDrawerErrors = 10
 )
 
 // update holds the page lock while it fetches, so a hung source can't be allowed the default 15 seconds
@@ -101,20 +101,20 @@ type cockpitWidget struct {
 		APIKey        string `yaml:"api-key"`
 	} `yaml:"markets"`
 
-	Now         []cockpitRow   `yaml:"-"`
-	Later       []cockpitRow   `yaml:"-"`
-	Failures    []string       `yaml:"-"`
-	SiteCount   int            `yaml:"-"`
-	SitesDown   []string       `yaml:"-"`
-	Hours       cockpitHours   `yaml:"-"`
-	Agenda      []calendarEntry `yaml:"-"`
-	Calendar    *calendarHub   `yaml:"-"`
-	calendarAt  int64
-	Quotes      marketList     `yaml:"-"`
-	Updated     time.Time      `yaml:"-"`
-	quotesAt    map[string]time.Time
-	lookupsAt   time.Time
-	lookups     cockpitLookups
+	Now        []cockpitRow    `yaml:"-"`
+	Later      []cockpitRow    `yaml:"-"`
+	Failures   []string        `yaml:"-"`
+	SiteCount  int             `yaml:"-"`
+	SitesDown  []string        `yaml:"-"`
+	Hours      cockpitHours    `yaml:"-"`
+	Agenda     []calendarEntry `yaml:"-"`
+	Calendar   *calendarHub    `yaml:"-"`
+	calendarAt int64
+	Quotes     marketList `yaml:"-"`
+	Updated    time.Time  `yaml:"-"`
+	quotesAt   map[string]time.Time
+	lookupsAt  time.Time
+	lookups    cockpitLookups
 }
 
 // What the services say about themselves, so config only needs an address and a token
@@ -185,7 +185,6 @@ type cockpitDay struct {
 	Hours  float64
 	Height int
 }
-
 
 func (widget *cockpitWidget) initialize() error {
 	widget.withTitle("Home").withCacheDuration(3 * time.Minute)
@@ -1074,7 +1073,14 @@ func (widget *cockpitWidget) fetchHours(now time.Time) (cockpitHours, error) {
 // off the server's zone, and an all-day event ends at midnight UTC, which is the evening
 // in Toronto, so the list reaches a day back and the page picks its own two days.
 func (widget *cockpitWidget) agenda(hub *calendarHub, now time.Time) []calendarEntry {
-	return hub.Entries(now.Add(-24*time.Hour), now.Add(62*time.Hour))
+	var entries []calendarEntry
+	// Working location and away labels are for the week view's day headers
+	for _, entry := range hub.Entries(now.Add(-24*time.Hour), now.Add(62*time.Hour)) {
+		if entry.Marker == "" {
+			entries = append(entries, entry)
+		}
+	}
+	return entries
 }
 
 // Twelve Data allows 800 calls a day shared with the Markets page, so each symbol

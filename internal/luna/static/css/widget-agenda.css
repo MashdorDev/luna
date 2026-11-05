@@ -138,6 +138,9 @@
 .cal-dsec .cal-dnotes { margin: 0; padding: 0; border: 0; }
 .cal-dclash { margin: 0; padding-left: 18px; color: var(--ck-warn); }
 .cal-dmap { font-size: 13px; }
+.cw-mark { display: block; margin-top: 2px; font-size: 11px; color: var(--color-text-base); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cw-lday .cw-mark { display: inline; margin: 0 0 0 8px; font-weight: 400; color: var(--color-text-subdue); }
+.cw-chip.task::before, .cw-lrow.task .cw-lbody b::before { content: ""; display: inline-block; width: 9px; height: 9px; margin-right: 5px; border: 1.5px solid currentColor; border-radius: 2px; vertical-align: -1px; }
 .cal-dchip.yes { background: color-mix(in srgb, var(--color-positive) 22%, transparent); color: var(--color-text-highlight); }
 .cal-dchip.maybe, .cal-dchip.wait { background: color-mix(in srgb, var(--ck-warn) 22%, transparent); color: var(--color-text-highlight); }
 .cal-dchip.no { background: color-mix(in srgb, var(--color-negative) 22%, transparent); color: var(--color-text-highlight); }

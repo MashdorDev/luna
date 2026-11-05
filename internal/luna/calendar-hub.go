@@ -68,6 +68,8 @@ type calendarGoogle struct {
 	Calendar     string `yaml:"calendar"`
 	// Only the contact birthdays Google adds to the calendar, which every other feed skips
 	Birthdays bool `yaml:"birthdays"`
+	// Google Tasks with a due date instead of calendar events
+	Tasks bool `yaml:"tasks"`
 }
 
 type calendarEvent struct {
@@ -92,6 +94,9 @@ type calendarEvent struct {
 	Reminders []int
 	// feed index and Google event id, for answering the invite from Luna
 	respondID string
+	// Where Dor works that day, or that Dor is away: a label on the day, not a meeting
+	Marker string
+	Task   bool
 	// When the hub saw this meeting move to a new time. The feeds' own last-modified
 	// stamps change on every RSVP, so they cannot tell a move from an answer.
 	Changed time.Time
@@ -128,6 +133,7 @@ type calendarHub struct {
 	// Guests' profile pictures by email, from the People API, and when each feed's
 	// account was last listed
 	photos     map[string]string
+	names      map[string]string
 	photosRead map[int]time.Time
 }
 
@@ -334,6 +340,8 @@ type calendarRaw struct {
 	dial                                     *calendarDial
 	recurring                                bool
 	reminders                                []int
+	marker                                   string
+	task                                     bool
 }
 
 // A file attached to the invite, usually a Google Doc for the meeting
@@ -368,7 +376,9 @@ func (hub *calendarHub) fetchFeed(index int) ([]calendarEvent, error) {
 	feed := hub.feeds[index]
 	var raws []calendarRaw
 	var err error
-	if feed.Google != nil {
+	if feed.Google != nil && feed.Google.Tasks {
+		raws, err = hub.fetchTasks(index)
+	} else if feed.Google != nil {
 		raws, err = hub.fetchGoogle(index)
 	} else {
 		raws, err = fetchICal(feed.URL)
@@ -404,6 +414,10 @@ func (hub *calendarHub) fetchFeed(index int) ([]calendarEvent, error) {
 		event.Link = raw.link
 		event.Attendees, event.Response, event.Open = raw.attendees, raw.response, raw.open
 		event.Files, event.Dial, event.Recurring, event.Reminders = raw.files, raw.dial, raw.recurring, raw.reminders
+		event.Marker, event.Task = raw.marker, raw.task
+		if event.Marker != "" {
+			event.remind = false
+		}
 		if raw.response != "" {
 			event.respondID = fmt.Sprintf("%d:%s", index, raw.uid)
 		}
@@ -509,17 +523,48 @@ func (hub *calendarHub) fetchGoogle(index int) ([]calendarRaw, error) {
 		hub.mu.Unlock()
 		return nil, err
 	}
+	// Meetings left on "the calendar's default" reminders get those minutes
+	var defaults []int
+	if request, err := cockpitRequest("GET", calendarGoogleAPI+"/users/me/calendarList/"+url.PathEscape(hub.feeds[index].Google.Calendar), map[string]string{"Authorization": "Bearer " + token}, nil); err == nil {
+		if list, err := cockpitFetch(request); err == nil {
+			for _, reminder := range list.Get("defaultReminders").Array() {
+				if reminder.Get("method").String() == "popup" {
+					defaults = append(defaults, int(reminder.Get("minutes").Int()))
+				}
+			}
+		}
+	}
 	var raws []calendarRaw
 	for _, item := range data.Get("items").Array() {
-		// Working location, focus time and out of office are blocks of Dor's own day, not meetings
 		kind := item.Get("eventType").String()
-		if birthdays != (kind == "birthday") || (!birthdays && kind != "" && kind != "default" && kind != "fromGmail") {
+		// Working location and out of office label the day; focus time is Dor's own block
+		marker := ""
+		switch kind {
+		case "workingLocation":
+			switch item.Get("workingLocationProperties.type").String() {
+			case "homeOffice":
+				marker = "Home"
+			case "officeLocation":
+				marker = "Office"
+				if label := item.Get("workingLocationProperties.officeLocation.label").String(); label != "" {
+					marker = "Office: " + label
+				}
+			default:
+				marker = item.Get("workingLocationProperties.customLocation.label").String()
+				if marker == "" {
+					marker = item.Get("summary").String()
+				}
+			}
+		case "outOfOffice":
+			marker = "Away"
+		}
+		if birthdays != (kind == "birthday") || (!birthdays && marker == "" && kind != "" && kind != "default" && kind != "fromGmail") {
 			continue
 		}
 		raw := calendarRaw{
 			name: item.Get("summary").String(), uid: item.Get("id").String(), status: item.Get("status").String(),
 			location: item.Get("location").String(), description: item.Get("description").String(),
-			link: item.Get("hangoutLink").String(), open: item.Get("htmlLink").String(),
+			link: item.Get("hangoutLink").String(), open: item.Get("htmlLink").String(), marker: marker,
 		}
 		account := ""
 		for _, entry := range item.Get("attendees").Array() {
@@ -573,6 +618,9 @@ func (hub *calendarHub) fetchGoogle(index int) ([]calendarRaw, error) {
 				raw.reminders = append(raw.reminders, int(reminder.Get("minutes").Int()))
 			}
 		}
+		if item.Get("reminders.useDefault").Bool() {
+			raw.reminders = append(raw.reminders, defaults...)
+		}
 		if day := item.Get("start.date").String(); day != "" {
 			raw.allDay = true
 			raw.start, _ = time.Parse(time.DateOnly, day)
@@ -625,6 +673,8 @@ type calendarEntry struct {
 	Files     []calendarFile     `json:"files,omitempty"`
 	Reminders []int              `json:"reminders,omitempty"`
 	Respond   string             `json:"respond,omitempty"`
+	Marker    string             `json:"marker,omitempty"`
+	Task      bool               `json:"task,omitempty"`
 	Dial      *calendarDial      `json:"dial,omitempty"`
 	Recurring bool               `json:"recurring,omitempty"`
 	Color     int                `json:"color"`
@@ -650,12 +700,16 @@ func (hub *calendarHub) Entries(from, to time.Time) []calendarEntry {
 			Quiet: !event.remind || event.Holiday, Tentative: event.Tentative,
 			Attendees: event.Attendees, Response: event.Response, Open: event.Open,
 			Files: event.Files, Dial: event.Dial, Recurring: event.Recurring, Reminders: event.Reminders, Respond: event.respondID,
+			Marker: event.Marker, Task: event.Task,
 			Start: event.Start.Format(time.RFC3339), End: event.End.Format(time.RFC3339),
 		}
 		if len(event.Attendees) > 0 {
 			entries[i].Attendees = make([]calendarAttendee, len(event.Attendees))
 			for j, attendee := range event.Attendees {
 				attendee.Photo = hub.photoFor(attendee.Email)
+				if attendee.Name == "" {
+					attendee.Name = hub.nameFor(attendee.Email)
+				}
 				entries[i].Attendees[j] = attendee
 			}
 		}

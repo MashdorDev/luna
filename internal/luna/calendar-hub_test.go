@@ -149,7 +149,7 @@ func TestCalendarHubReadsGoogleCalendarAPI(t *testing.T) {
 					"conferenceData":{"entryPoints":[{"entryPointType":"video","uri":"https://meet.google.com/abc-defg-hij"},{"entryPointType":"phone","uri":"tel:+1-555-0100","label":"+1 555-0100","pin":"123456"}]}},
 				{"summary":"Offsite","status":"tentative","start":{"date":"2026-11-06"},"end":{"date":"2026-11-07"}},
 				{"summary":"Skipped","start":{"dateTime":"2026-11-05T12:00:00Z"},"end":{"dateTime":"2026-11-05T13:00:00Z"},"attendees":[{"self":true,"responseStatus":"declined"}]},
-				{"summary":"Home","eventType":"workingLocation","start":{"date":"2026-11-05"},"end":{"date":"2026-11-06"}},
+				{"summary":"Home","eventType":"workingLocation","workingLocationProperties":{"type":"homeOffice"},"start":{"date":"2026-11-05"},"end":{"date":"2026-11-06"}},
 				{"summary":"Focus","eventType":"focusTime","start":{"dateTime":"2026-11-05T14:00:00Z"},"end":{"dateTime":"2026-11-05T16:00:00Z"}},
 				{"summary":"Sam's birthday","eventType":"birthday","start":{"date":"2026-11-06"},"end":{"date":"2026-11-07"}},
 				{"summary":"Away","eventType":"outOfOffice","start":{"dateTime":"2026-11-06T14:00:00Z"},"end":{"dateTime":"2026-11-06T22:00:00Z"}}
@@ -173,8 +173,9 @@ func TestCalendarHubReadsGoogleCalendarAPI(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(events) != 2 {
-			t.Fatalf("want 2 events, got %d", len(events))
+		// Working location and away come through as day labels; focus time and birthdays do not
+		if len(events) != 4 || events[2].Marker != "Home" || events[3].Marker != "Away" || events[3].remind {
+			t.Fatalf("want 2 meetings and 2 day labels, got %+v", events)
 		}
 		if events[0].Link != "https://meet.google.com/abc-defg-hij" || events[0].End.Sub(events[0].Start) != 15*time.Minute {
 			t.Fatalf("standup: %+v", events[0])

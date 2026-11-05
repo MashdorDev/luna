@@ -19,6 +19,9 @@ const calendarPhotoFor = 24 * time.Hour
 
 // A person as the People API lists them
 type calendarPerson struct {
+	Names []struct {
+		DisplayName string `json:"displayName"`
+	} `json:"names"`
 	Photos []struct {
 		URL     string `json:"url"`
 		Default bool   `json:"default"`
@@ -29,8 +32,8 @@ type calendarPerson struct {
 }
 
 // calendarPhotosFrom maps each email of the listed people to their photo, skipping
-// Google's generated letter avatars. Each list names its array differently.
-func calendarPhotosFrom(body []byte, found map[string]string) (next string) {
+// Google's generated letter avatars, and to their name. Each list names its array differently.
+func calendarPhotosFrom(body []byte, found, names map[string]string) (next string) {
 	var page struct {
 		People        []calendarPerson `json:"people"`
 		Connections   []calendarPerson `json:"connections"`
@@ -41,6 +44,13 @@ func calendarPhotosFrom(body []byte, found map[string]string) (next string) {
 		return ""
 	}
 	for _, person := range append(append(page.People, page.Connections...), page.OtherContacts...) {
+		if len(person.Names) > 0 && person.Names[0].DisplayName != "" {
+			for _, address := range person.EmailAddresses {
+				if email := strings.ToLower(address.Value); email != "" && names[email] == "" {
+					names[email] = person.Names[0].DisplayName
+				}
+			}
+		}
 		photo := ""
 		for _, candidate := range person.Photos {
 			if !candidate.Default && candidate.URL != "" {
@@ -67,7 +77,7 @@ func calendarPhotosFrom(body []byte, found map[string]string) (next string) {
 func (hub *calendarHub) lookupPhotos(index int, now time.Time) {
 	hub.mu.Lock()
 	if hub.photos == nil {
-		hub.photos, hub.photosRead = map[string]string{}, map[int]time.Time{}
+		hub.photos, hub.names, hub.photosRead = map[string]string{}, map[string]string{}, map[int]time.Time{}
 	}
 	fresh := now.Sub(hub.photosRead[index]) < calendarPhotoFor
 	if !fresh {
@@ -81,15 +91,15 @@ func (hub *calendarHub) lookupPhotos(index int, now time.Time) {
 	if err != nil {
 		return
 	}
-	found := map[string]string{}
+	found, names := map[string]string{}, map[string]string{}
 	failures := 0
 	lists := []struct {
 		path  string
 		query url.Values
 	}{
-		{"/people:listDirectoryPeople", url.Values{"sources": {"DIRECTORY_SOURCE_TYPE_DOMAIN_PROFILE"}, "readMask": {"photos,emailAddresses"}, "pageSize": {"1000"}}},
-		{"/people/me/connections", url.Values{"personFields": {"photos,emailAddresses"}, "pageSize": {"1000"}}},
-		{"/otherContacts", url.Values{"readMask": {"photos,emailAddresses"}, "pageSize": {"1000"}}},
+		{"/people:listDirectoryPeople", url.Values{"sources": {"DIRECTORY_SOURCE_TYPE_DOMAIN_PROFILE"}, "readMask": {"names,photos,emailAddresses"}, "pageSize": {"1000"}}},
+		{"/people/me/connections", url.Values{"personFields": {"names,photos,emailAddresses"}, "pageSize": {"1000"}}},
+		{"/otherContacts", url.Values{"readMask": {"names,photos,emailAddresses"}, "pageSize": {"1000"}}},
 	}
 	for _, list := range lists {
 		// Pages are capped so a huge directory cannot hold the tick
@@ -107,7 +117,7 @@ func (hub *calendarHub) lookupPhotos(index int, now time.Time) {
 				failures++
 				break
 			}
-			if next = calendarPhotosFrom([]byte(data.Raw), found); next == "" {
+			if next = calendarPhotosFrom([]byte(data.Raw), found, names); next == "" {
 				break
 			}
 		}
@@ -123,10 +133,75 @@ func (hub *calendarHub) lookupPhotos(index int, now time.Time) {
 			changed = true
 		}
 	}
+	for email, name := range names {
+		if hub.names[email] != name {
+			hub.names[email] = name
+			changed = true
+		}
+	}
 	if changed {
 		hub.version.Add(1)
 	}
 	hub.mu.Unlock()
+}
+
+// nameFor is the directory or contact name for an email, or empty
+func (hub *calendarHub) nameFor(email string) string {
+	hub.mu.Lock()
+	defer hub.mu.Unlock()
+	return hub.names[strings.ToLower(email)]
+}
+
+var calendarTasksAPI = "https://tasks.googleapis.com/tasks/v1"
+
+// fetchTasks reads the open Google Tasks that have a due date in the hub's window, from
+// every task list. Google keeps only the date of a due time, so each is an all-day entry.
+func (hub *calendarHub) fetchTasks(index int) ([]calendarRaw, error) {
+	now := time.Now()
+	token, err := hub.googleToken(index, now)
+	if err != nil {
+		return nil, err
+	}
+	headers := map[string]string{"Authorization": "Bearer " + token}
+	request, err := cockpitRequest("GET", calendarTasksAPI+"/users/@me/lists?maxResults=100", headers, nil)
+	if err != nil {
+		return nil, err
+	}
+	lists, err := cockpitFetch(request)
+	if err != nil {
+		hub.mu.Lock()
+		hub.states[index].token = ""
+		hub.mu.Unlock()
+		return nil, err
+	}
+	query := url.Values{
+		"showCompleted": {"false"}, "maxResults": {"100"},
+		"dueMin": {now.AddDate(0, 0, -calendarLookbackDays).Format(time.RFC3339)},
+		"dueMax": {now.AddDate(0, 0, calendarHorizonDays).Format(time.RFC3339)},
+	}
+	var raws []calendarRaw
+	for _, list := range lists.Get("items").Array() {
+		request, err := cockpitRequest("GET", calendarTasksAPI+"/lists/"+url.PathEscape(list.Get("id").String())+"/tasks?"+query.Encode(), headers, nil)
+		if err != nil {
+			return nil, err
+		}
+		tasks, err := cockpitFetch(request)
+		if err != nil {
+			return nil, err
+		}
+		for _, task := range tasks.Get("items").Array() {
+			due, err := time.Parse(time.RFC3339, task.Get("due").String())
+			if err != nil {
+				continue
+			}
+			day := time.Date(due.Year(), due.Month(), due.Day(), 0, 0, 0, 0, time.UTC)
+			raws = append(raws, calendarRaw{
+				name: task.Get("title").String(), uid: task.Get("id").String(), description: task.Get("notes").String(),
+				start: day, end: day.AddDate(0, 0, 1), allDay: true, open: task.Get("webViewLink").String(), task: true,
+			})
+		}
+	}
+	return raws, nil
 }
 
 // photoFor is the cached picture for an email, or empty

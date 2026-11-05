@@ -76,12 +76,16 @@ func TestCalendarRespondChangesOnlyDorsAnswer(t *testing.T) {
 
 func TestCalendarPhotosFromReadsEveryListShape(t *testing.T) {
 	found := map[string]string{}
+	names := map[string]string{}
 	next := calendarPhotosFrom([]byte(`{"people":[
-		{"emailAddresses":[{"value":"Gus@x.org"},{"value":"gus@home.test"}],"photos":[{"url":"https://p/letter","default":true},{"url":"https://p/gus"}]},
+		{"names":[{"displayName":"Gus Grant"}],"emailAddresses":[{"value":"Gus@x.org"},{"value":"gus@home.test"}],"photos":[{"url":"https://p/letter","default":true},{"url":"https://p/gus"}]},
 		{"emailAddresses":[{"value":"or@x.org"}],"photos":[{"url":"https://p/or-letter","default":true}]}
-	],"nextPageToken":"more"}`), found)
-	calendarPhotosFrom([]byte(`{"connections":[{"emailAddresses":[{"value":"idan@y.test"}],"photos":[{"url":"https://p/idan"}]}]}`), found)
-	calendarPhotosFrom([]byte(`{"otherContacts":[{"emailAddresses":[{"value":"gus@x.org"}],"photos":[{"url":"https://p/other"}]}]}`), found)
+	],"nextPageToken":"more"}`), found, names)
+	calendarPhotosFrom([]byte(`{"connections":[{"emailAddresses":[{"value":"idan@y.test"}],"photos":[{"url":"https://p/idan"}]}]}`), found, names)
+	calendarPhotosFrom([]byte(`{"otherContacts":[{"emailAddresses":[{"value":"gus@x.org"}],"photos":[{"url":"https://p/other"}]}]}`), found, names)
+	if names["gus@x.org"] != "Gus Grant" || names["gus@home.test"] != "Gus Grant" {
+		t.Fatalf("names %v", names)
+	}
 	if next != "more" || found["gus@x.org"] != "https://p/gus" || found["gus@home.test"] != "https://p/gus" || found["idan@y.test"] != "https://p/idan" {
 		t.Fatalf("next %q found %v", next, found)
 	}

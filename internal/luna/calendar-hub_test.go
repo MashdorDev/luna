@@ -143,7 +143,7 @@ func TestCalendarHubReadsGoogleCalendarAPI(t *testing.T) {
 			}
 			w.Write([]byte(`{"items":[
 				{"summary":"Standup","status":"confirmed","start":{"dateTime":"2026-11-05T10:00:00-05:00"},"end":{"dateTime":"2026-11-05T10:15:00-05:00"},"hangoutLink":"https://meet.google.com/abc-defg-hij","updated":"2026-11-04T12:00:00Z",
-					"htmlLink":"https://www.google.com/calendar/event?eid=abc","recurringEventId":"series",
+					"htmlLink":"https://www.google.com/calendar/event?eid=abc","recurringEventId":"series","reminders":{"useDefault":false,"overrides":[{"method":"popup","minutes":5},{"method":"email","minutes":60}]},
 					"attendees":[{"email":"craig@example.com","displayName":"Craig","organizer":true,"responseStatus":"accepted"},{"email":"dor@losttribe.org","self":true,"responseStatus":"tentative","comment":"may be late"},{"email":"room@resource.calendar.google.com","resource":true,"responseStatus":"accepted"}],
 					"attachments":[{"title":"Agenda","fileUrl":"https://docs.google.com/document/d/1","iconLink":"https://icon"}],
 					"conferenceData":{"entryPoints":[{"entryPointType":"video","uri":"https://meet.google.com/abc-defg-hij"},{"entryPointType":"phone","uri":"tel:+1-555-0100","label":"+1 555-0100","pin":"123456"}]}},
@@ -151,6 +151,7 @@ func TestCalendarHubReadsGoogleCalendarAPI(t *testing.T) {
 				{"summary":"Skipped","start":{"dateTime":"2026-11-05T12:00:00Z"},"end":{"dateTime":"2026-11-05T13:00:00Z"},"attendees":[{"self":true,"responseStatus":"declined"}]},
 				{"summary":"Home","eventType":"workingLocation","start":{"date":"2026-11-05"},"end":{"date":"2026-11-06"}},
 				{"summary":"Focus","eventType":"focusTime","start":{"dateTime":"2026-11-05T14:00:00Z"},"end":{"dateTime":"2026-11-05T16:00:00Z"}},
+				{"summary":"Sam's birthday","eventType":"birthday","start":{"date":"2026-11-06"},"end":{"date":"2026-11-07"}},
 				{"summary":"Away","eventType":"outOfOffice","start":{"dateTime":"2026-11-06T14:00:00Z"},"end":{"dateTime":"2026-11-06T22:00:00Z"}}
 			]}`))
 		default:
@@ -184,6 +185,9 @@ func TestCalendarHubReadsGoogleCalendarAPI(t *testing.T) {
 		}
 		if standup.Open != "https://www.google.com/calendar/event?eid=abc&authuser=dor%40losttribe.org" || !standup.Recurring {
 			t.Fatalf("open %q recurring %v", standup.Open, standup.Recurring)
+		}
+		if len(standup.Reminders) != 1 || standup.Reminders[0] != 5 {
+			t.Fatalf("reminders %v", standup.Reminders)
 		}
 		if len(standup.Files) != 1 || standup.Files[0].Title != "Agenda" || standup.Dial == nil || standup.Dial.Pin != "123456" {
 			t.Fatalf("files %+v dial %+v", standup.Files, standup.Dial)

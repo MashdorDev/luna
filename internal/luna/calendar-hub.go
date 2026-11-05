@@ -66,6 +66,8 @@ type calendarGoogle struct {
 	ClientSecret string `yaml:"client-secret"`
 	RefreshToken string `yaml:"refresh-token"`
 	Calendar     string `yaml:"calendar"`
+	// Only the contact birthdays Google adds to the calendar, which every other feed skips
+	Birthdays bool `yaml:"birthdays"`
 }
 
 type calendarEvent struct {
@@ -86,6 +88,8 @@ type calendarEvent struct {
 	Files     []calendarFile
 	Dial      *calendarDial
 	Recurring bool
+	// Minutes before the start that Dor set on this meeting in Google, on top of the usual ones
+	Reminders []int
 	// When the hub saw this meeting move to a new time. The feeds' own last-modified
 	// stamps change on every RSVP, so they cannot tell a move from an answer.
 	Changed time.Time
@@ -320,6 +324,7 @@ type calendarRaw struct {
 	files                                    []calendarFile
 	dial                                     *calendarDial
 	recurring                                bool
+	reminders                                []int
 }
 
 // A file attached to the invite, usually a Google Doc for the meeting
@@ -388,7 +393,7 @@ func (hub *calendarHub) fetchFeed(index int) ([]calendarEvent, error) {
 		event.Notes = calendarPlainText(raw.description)
 		event.Link = raw.link
 		event.Attendees, event.Response, event.Open = raw.attendees, raw.response, raw.open
-		event.Files, event.Dial, event.Recurring = raw.files, raw.dial, raw.recurring
+		event.Files, event.Dial, event.Recurring, event.Reminders = raw.files, raw.dial, raw.recurring, raw.reminders
 		if event.Link == "" {
 			event.Link = calendarLinkPattern.FindString(event.Location)
 		}
@@ -474,6 +479,10 @@ func (hub *calendarHub) fetchGoogle(index int) ([]calendarRaw, error) {
 		"timeMin": {now.AddDate(0, 0, -calendarLookbackDays).Format(time.RFC3339)},
 		"timeMax": {now.AddDate(0, 0, calendarHorizonDays).Format(time.RFC3339)},
 	}
+	birthdays := hub.feeds[index].Google.Birthdays
+	if birthdays {
+		query.Set("eventTypes", "birthday")
+	}
 	target := calendarGoogleAPI + "/calendars/" + url.PathEscape(hub.feeds[index].Google.Calendar) + "/events?" + query.Encode()
 	request, err := cockpitRequest("GET", target, map[string]string{"Authorization": "Bearer " + token}, nil)
 	if err != nil {
@@ -490,7 +499,8 @@ func (hub *calendarHub) fetchGoogle(index int) ([]calendarRaw, error) {
 	var raws []calendarRaw
 	for _, item := range data.Get("items").Array() {
 		// Working location, focus time and out of office are blocks of Dor's own day, not meetings
-		if kind := item.Get("eventType").String(); kind != "" && kind != "default" && kind != "fromGmail" {
+		kind := item.Get("eventType").String()
+		if birthdays != (kind == "birthday") || (!birthdays && kind != "" && kind != "default" && kind != "fromGmail") {
 			continue
 		}
 		raw := calendarRaw{
@@ -545,6 +555,11 @@ func (hub *calendarHub) fetchGoogle(index int) ([]calendarRaw, error) {
 			raw.files = append(raw.files, calendarFile{Title: file.Get("title").String(), URL: file.Get("fileUrl").String(), Icon: file.Get("iconLink").String()})
 		}
 		raw.recurring = item.Get("recurringEventId").String() != ""
+		for _, reminder := range item.Get("reminders.overrides").Array() {
+			if reminder.Get("method").String() == "popup" {
+				raw.reminders = append(raw.reminders, int(reminder.Get("minutes").Int()))
+			}
+		}
 		if day := item.Get("start.date").String(); day != "" {
 			raw.allDay = true
 			raw.start, _ = time.Parse(time.DateOnly, day)
@@ -595,6 +610,7 @@ type calendarEntry struct {
 	Response  string             `json:"response,omitempty"`
 	Open      string             `json:"open,omitempty"`
 	Files     []calendarFile     `json:"files,omitempty"`
+	Reminders []int              `json:"reminders,omitempty"`
 	Dial      *calendarDial      `json:"dial,omitempty"`
 	Recurring bool               `json:"recurring,omitempty"`
 	Color     int                `json:"color"`
@@ -619,7 +635,7 @@ func (hub *calendarHub) Entries(from, to time.Time) []calendarEntry {
 			Name: event.Name, Calendars: event.Calendars, Holiday: event.Holiday, Link: event.Link, Location: event.Location, Notes: event.Notes, Color: colors[event.Calendars[0]],
 			Quiet: !event.remind || event.Holiday, Tentative: event.Tentative,
 			Attendees: event.Attendees, Response: event.Response, Open: event.Open,
-			Files: event.Files, Dial: event.Dial, Recurring: event.Recurring,
+			Files: event.Files, Dial: event.Dial, Recurring: event.Recurring, Reminders: event.Reminders,
 			Start: event.Start.Format(time.RFC3339), End: event.End.Format(time.RFC3339),
 		}
 		order[i] = event.Start
@@ -683,6 +699,11 @@ func mergeCalendarEvents(events []calendarEvent) []calendarEvent {
 				merged[last].Dial = event.Dial
 			}
 			merged[last].Recurring = merged[last].Recurring || event.Recurring
+			for _, minutes := range event.Reminders {
+				if !slices.Contains(merged[last].Reminders, minutes) {
+					merged[last].Reminders = append(merged[last].Reminders, minutes)
+				}
+			}
 			if event.Changed.After(merged[last].Changed) {
 				merged[last].Changed = event.Changed
 			}

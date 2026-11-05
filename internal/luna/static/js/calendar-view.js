@@ -774,7 +774,10 @@ function openDetails(event, root) {
         else if (event.quiet) reminder = 'No reminders for this calendar';
         else if (!('Notification' in window)) reminder = 'This browser cannot show reminders';
         else if (Notification.permission !== 'granted') reminder = 'Reminders are off in this browser';
-        else reminder = `Reminder ${minutes.join(' and ')} min before`;
+        else {
+            const all = [...new Set([...minutes, ...(event.reminders || [])])].sort((a, b) => b - a);
+            reminder = `Reminder ${all.join(', ').replace(/, (\d+)$/, ' and $1')} min before`;
+        }
         nodes.push(element('div', 'cal-dremind', reminder));
     }
 
@@ -885,8 +888,10 @@ function remind() {
     let changed = false;
     document.querySelectorAll('[data-cal-root]').forEach((root) => {
         const shown = shownFor(root);
-        parseList(root.dataset.calRemind).forEach((minutes) => {
-            rootEvents(root).forEach((event) => {
+        const usual = parseList(root.dataset.calRemind);
+        rootEvents(root).forEach((event) => {
+            // Times Dor set on the meeting in Google come on top of the usual ones
+            [...new Set([...usual, ...(event.reminders || [])])].forEach((minutes) => {
                 if (!event.start || event.quiet || event.holiday || !event.calendars.some(shown)) return;
                 const start = new Date(event.start);
                 const at = start - minutes * 60000;

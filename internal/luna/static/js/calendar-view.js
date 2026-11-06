@@ -429,6 +429,47 @@ function buildList(root, data) {
     list.replaceChildren(...nodes);
 }
 
+// What time it is in the home zone and each extra zone, with the gap from this device
+function zoneOffset(now, zone) {
+    const parts = Object.fromEntries(new Intl.DateTimeFormat('en-US', { timeZone: zone, hourCycle: 'h23', year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: 'numeric' })
+        .formatToParts(now).map((part) => [part.type, Number(part.value)]));
+    const there = Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute);
+    const here = Date.UTC(now.getFullYear(), now.getMonth(), now.getDate(), now.getHours(), now.getMinutes());
+    return Math.round((there - here) / 60000);
+}
+
+function offsetText(minutes) {
+    if (!minutes) return 'here';
+    const hours = Math.abs(minutes) / 60;
+    return `${minutes > 0 ? '+' : '-'}${Number.isInteger(hours) ? hours : hours.toFixed(1)}h`;
+}
+
+function paintClocks(root, now) {
+    const strip = root.querySelector('[data-cal-clocks]');
+    if (!strip) return;
+    const home = root.dataset.calHome;
+    const zones = [...(home ? [{ zone: home, label: place(home) }] : []), ...parseList(root.dataset.calZones)];
+    setHidden(strip, !zones.length);
+    if (strip.childElementCount !== zones.length) {
+        strip.replaceChildren(...zones.map(({ zone, label }) => {
+            const item = element('div', 'cw-clock');
+            item.dataset.zone = zone;
+            item.append(element('span', 'cw-clock-place', label || place(zone)), element('b', 'cw-clock-time'), element('span', 'cw-clock-gap'));
+            return item;
+        }));
+    }
+    const today = now.toLocaleDateString(undefined, { weekday: 'short' });
+    strip.querySelectorAll('.cw-clock').forEach((item) => {
+        const zone = item.dataset.zone;
+        const day = now.toLocaleDateString(undefined, { weekday: 'short', timeZone: zone });
+        const hour = Number(new Intl.DateTimeFormat('en-US', { timeZone: zone, hour: 'numeric', hourCycle: 'h23' }).format(now));
+        setText(item.querySelector('.cw-clock-time'), clock(now, zone));
+        setText(item.querySelector('.cw-clock-gap'), `${offsetText(zoneOffset(now, zone))}${day !== today ? `, ${day}` : ''}`);
+        const night = hour < 8 || hour >= 22;
+        if (item.classList.contains('night') !== night) item.classList.toggle('night', night);
+    });
+}
+
 function paintWeek(root) {
     const grid = root.querySelector('[data-cal-grid]');
     if (!grid) return;
@@ -440,6 +481,7 @@ function paintWeek(root) {
     });
     const home = root.dataset.calHome;
     const now = new Date();
+    paintClocks(root, now);
     const zone = root.querySelector('[data-cal-zone]');
     const away = home && clock(now, home) !== clock(now);
     setHidden(zone, !away);

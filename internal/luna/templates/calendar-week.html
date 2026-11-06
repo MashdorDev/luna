@@ -11,6 +11,7 @@
             <button type="button" data-cal-view="week">Week</button><button type="button" data-cal-view="list">List</button>
         </div>
     </div>
+    <div class="cw-clocks" data-cal-clocks></div>
     <div class="cw-legend">
         {{ range .Calendar.Calendars }}
         <label class="cal-c{{ .Color }}"><input type="checkbox" data-cal-toggle="{{ .Name }}"><i></i>{{ .Name }}</label>

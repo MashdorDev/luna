@@ -235,3 +235,12 @@
     .cw-ltime { grid-column: 2; }
     .cw-lbody { grid-column: 2; }
 }
+
+/* Clocks for the home zone and calendar.zones, above the legend */
+.cw-clocks { display: flex; flex-wrap: wrap; gap: 8px 24px; margin-bottom: 12px; }
+.cw-clocks[hidden] { display: none; }
+.cw-clock { display: flex; align-items: baseline; gap: 6px; white-space: nowrap; }
+.cw-clock-place { color: var(--color-text-subdue); font-size: 12px; }
+.cw-clock-time { color: var(--color-text-highlight); font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.cw-clock-gap { color: var(--color-text-subdue); font-size: 11px; }
+.cw-clock.night .cw-clock-time { color: var(--color-text-subdue); font-weight: 500; }

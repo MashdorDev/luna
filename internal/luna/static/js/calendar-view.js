@@ -440,8 +440,8 @@ function zoneOffset(now, zone) {
 
 function offsetText(minutes) {
     if (!minutes) return 'here';
-    const hours = Math.abs(minutes) / 60;
-    return `${minutes > 0 ? '+' : '-'}${Number.isInteger(hours) ? hours : hours.toFixed(1)}h`;
+    const gap = Math.abs(minutes);
+    return `${minutes > 0 ? '+' : '-'}${Math.floor(gap / 60)}h${gap % 60 ? String(gap % 60).padStart(2, '0') : ''}`;
 }
 
 const CLOCK_STYLE = 'luna-calendar-clocks';
@@ -544,7 +544,9 @@ function paintClocks(root, now) {
     const strip = root.querySelector('[data-cal-clocks]');
     if (!bar || !strip) return;
     const home = root.dataset.calHome;
-    const zones = [...(home ? [{ zone: home, label: place(home) }] : []), ...parseList(root.dataset.calZones)];
+    // An empty zone would throw in Intl and stop the whole week painting; a repeat would get a dead card
+    const zones = [...(home ? [{ zone: home, label: place(home) }] : []), ...parseList(root.dataset.calZones)]
+        .filter((item, index, all) => item.zone && all.findIndex((other) => other.zone === item.zone) === index);
     setHidden(bar, !zones.length);
     if (!zones.length) return;
     const style = savedClockStyle();

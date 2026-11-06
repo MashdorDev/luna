@@ -302,9 +302,9 @@ function buildWeek(root, data) {
         if (data.marks[i].length) head.append(element('span', 'cw-mark', data.marks[i].join(', ')));
         nodes.push(head);
     });
-    nodes.push(element('div', 'cw-corner'));
-    allDay.forEach((list) => {
-        const cell = element('div', 'cw-allday');
+    nodes.push(element('div', 'cw-corner cw-corner-allday'));
+    allDay.forEach((list, i) => {
+        const cell = element('div', 'cw-allday' + (dayKey(days[i]) === today ? ' today' : ''));
         list.forEach((event) => {
             const chip = opener('button', `cw-chip cal-c${event.color}${event.holiday ? ' hol' : ''}${event.task ? ' task' : ''}`, event);
             chip.textContent = event.name;
@@ -355,6 +355,8 @@ function buildWeek(root, data) {
     grid.dataset.first = first;
     grid.dataset.span = span;
     grid.replaceChildren(...nodes);
+    // The all-day row (tasks, holidays) pins under the day names, so it needs their height
+    grid.style.setProperty('--cw-head', `${grid.querySelector('.cw-head')?.offsetHeight || 0}px`);
     scrollWeek(root, grid, first, span);
 }
 
@@ -370,7 +372,7 @@ function scrollWeek(root, grid, first, span) {
     if (!column) return;
     const minute = line ? minutesOf(new Date()) : 7 * 60;
     const top = column.getBoundingClientRect().top - box.getBoundingClientRect().top + box.scrollTop;
-    const head = grid.querySelector('.cw-head')?.offsetHeight || 0;
+    const head = (grid.querySelector('.cw-head')?.offsetHeight || 0) + (grid.querySelector('.cw-corner-allday')?.offsetHeight || 0);
     const y = top + ((minute - first) / span) * column.offsetHeight;
     box.scrollTop = Math.max(0, y - head - (line ? (box.clientHeight - head) / 3 : 12));
 }

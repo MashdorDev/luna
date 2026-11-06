@@ -77,6 +77,11 @@
 .cw-head span { font-size: 16px; color: var(--color-text-base); }
 .cw-head.today b, .cw-head.today span { color: var(--color-primary); }
 .cw-allday { border-left: 1px solid var(--color-separator); padding: 2px 3px 6px; display: flex; flex-direction: column; gap: 2px; min-height: 8px; }
+/* Tasks and all-day events stay in view under the day names; a long list scrolls in its own cell */
+.cw-allday, .cw-corner-allday { position: sticky; top: var(--cw-head, 0px); z-index: 4; background: var(--color-widget-background); border-bottom: 1px solid var(--color-separator); }
+.cw-allday { max-height: 112px; overflow-y: auto; scrollbar-width: thin; }
+.cw-allday > .cw-chip { flex-shrink: 0; }
+.cw-allday.today { background: color-mix(in srgb, var(--color-primary) 5%, var(--color-widget-background)); }
 .cw-chip { font: inherit; text-align: start; cursor: pointer; border-top: 0; border-right: 0; border-bottom: 0; padding: 1px 6px; border-radius: 3px; background: color-mix(in srgb, var(--cal) 22%, transparent); border-left: 3px solid var(--cal); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--color-text-highlight); }
 .cw-chip.hol { background: none; color: var(--color-text-subdue); }
 .cw-hours { position: relative; height: calc(var(--rows, 10) * 44px); }

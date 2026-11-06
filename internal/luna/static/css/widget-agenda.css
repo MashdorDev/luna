@@ -236,11 +236,61 @@
     .cw-lbody { grid-column: 2; }
 }
 
-/* Clocks for the home zone and calendar.zones, above the legend */
-.cw-clocks { display: flex; flex-wrap: wrap; gap: 8px 24px; margin-bottom: 12px; }
-.cw-clocks[hidden] { display: none; }
-.cw-clock { display: flex; align-items: baseline; gap: 6px; white-space: nowrap; }
-.cw-clock-place { color: var(--color-text-subdue); font-size: 12px; }
-.cw-clock-time { color: var(--color-text-highlight); font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums; }
-.cw-clock-gap { color: var(--color-text-subdue); font-size: 11px; }
-.cw-clock.night .cw-clock-time { color: var(--color-text-subdue); font-weight: 500; }
+/* Clocks for the home zone and calendar.zones, above the legend, in four looks */
+.cw-clockbar { --cw-night: color-mix(in srgb, var(--color-text-subdue) 22%, transparent); --cw-day: color-mix(in srgb, var(--color-primary) 55%, transparent); display: flex; align-items: flex-start; gap: 12px 20px; margin-bottom: 14px; }
+.cw-clockbar[hidden] { display: none; }
+.cw-clocks { flex: 1; min-width: 0; }
+.cw-clockstyles { flex-shrink: 0; }
+.cw-clockstyles button { padding: 3px 10px; font-size: 12px; }
+.cw-clock-place { color: var(--color-text-subdue); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cw-clock-time { color: var(--color-text-highlight); font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.cw-clock-gap { color: var(--color-text-subdue); font-size: 11px; white-space: nowrap; }
+.cw-clock.night .cw-clock-time, .cw-tl-read.night .cw-clock-time { color: var(--color-text-subdue); }
+.cw-clocks[data-style="bars"], .cw-clocks[data-style="cards"], .cw-clocks[data-style="faces"] { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 10px; }
+
+/* Bars: the zone's whole day, work hours lit, a dot for now */
+.cw-clocks[data-style="bars"] .cw-clock { display: flex; flex-direction: column; gap: 4px; padding: 10px 12px; border: 1px solid var(--color-separator); border-radius: 8px; }
+.cw-clock-head { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
+.cw-clocks[data-style="bars"] .cw-clock-time { font-size: 20px; line-height: 1.2; }
+.cw-clock-day { position: relative; height: 6px; margin-top: 4px; border-radius: 3px;
+  background: linear-gradient(to right, var(--cw-night) 33.333%, var(--cw-day) 33.333% 91.667%, var(--cw-night) 91.667%); }
+.cw-clock-dot { position: absolute; top: 50%; width: 10px; height: 10px; margin: -5px 0 0 -5px; border-radius: 50%; background: var(--color-primary); box-shadow: 0 0 0 2px var(--color-widget-background); }
+
+/* Faces: an analog dial beside the reading */
+.cw-clocks[data-style="faces"] .cw-clock { display: flex; align-items: center; gap: 10px; }
+.cw-clock-text { display: flex; flex-direction: column; min-width: 0; }
+.cw-clocks[data-style="faces"] .cw-clock-time { font-size: 15px; }
+.cw-face { width: 52px; height: 52px; flex-shrink: 0; }
+.cw-face-rim { fill: var(--color-widget-background-highlight); stroke: var(--color-separator); stroke-width: 2; }
+.cw-face-tick { stroke: var(--color-text-subdue); stroke-width: 2; opacity: .5; }
+.cw-face-hour { stroke: var(--color-text-highlight); stroke-width: 5; stroke-linecap: round; }
+.cw-face-minute { stroke: var(--color-text-highlight); stroke-width: 3; stroke-linecap: round; }
+.cw-face-pin { fill: var(--color-primary); }
+.cw-clock.night .cw-face-rim { fill: var(--color-separator); }
+.cw-clock.night .cw-face-hour, .cw-clock.night .cw-face-minute { stroke: var(--color-text-subdue); }
+
+/* Cards: the time large, nothing else */
+.cw-clocks[data-style="cards"] .cw-clock { display: flex; flex-direction: column; padding: 10px 12px; border-radius: 8px; background: var(--color-widget-background-highlight); }
+.cw-clocks[data-style="cards"] .cw-clock-time { font-size: 26px; line-height: 1.15; }
+.cw-clocks[data-style="cards"] .cw-clock.night { background: none; box-shadow: inset 0 0 0 1px var(--color-separator); }
+
+/* Timeline: one row per zone on this device's hours, like a meeting planner */
+.cw-clocks[data-style="timeline"] { display: grid; grid-template-columns: minmax(64px, max-content) 1fr max-content; gap: 5px 12px; align-items: center; }
+.cw-tl-ruler { position: relative; height: 14px; }
+.cw-tl-ruler span { position: absolute; font-size: 10px; color: var(--color-text-subdue); transform: translateX(-50%); }
+.cw-tl-ruler span:first-child { transform: none; }
+.cw-tl-track { position: relative; display: grid; grid-template-columns: repeat(24, 1fr); gap: 1px; height: 14px; }
+.cw-tl-track i { background: var(--cw-night); }
+.cw-tl-track i:first-child { border-radius: 3px 0 0 3px; }
+.cw-tl-track i:nth-child(24) { border-radius: 0 3px 3px 0; }
+.cw-tl-track i.day { background: var(--cw-day); }
+.cw-tl-now { position: absolute; top: -4px; bottom: -4px; width: 2px; margin-left: -1px; background: var(--color-negative); border-radius: 1px; }
+.cw-tl-read { display: flex; align-items: baseline; gap: 6px; }
+.cw-clocks[data-style="timeline"] .cw-clock-time { font-size: 13px; }
+
+@media (max-width: 700px) {
+    .cw-clockbar { flex-direction: column-reverse; }
+    .cw-clocks { width: 100%; }
+    .cw-clocks[data-style="bars"], .cw-clocks[data-style="cards"], .cw-clocks[data-style="faces"] { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .cw-tl-read .cw-clock-gap { display: none; }
+}

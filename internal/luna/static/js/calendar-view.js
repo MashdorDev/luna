@@ -444,31 +444,165 @@ function offsetText(minutes) {
     return `${minutes > 0 ? '+' : '-'}${Number.isInteger(hours) ? hours : hours.toFixed(1)}h`;
 }
 
+const CLOCK_STYLE = 'luna-calendar-clocks';
+const CLOCK_STYLES = ['bars', 'faces', 'cards', 'timeline'];
+// Work hours run from 8 AM to 10 PM; anything else draws as night
+const isDay = (minutes) => minutes >= 480 && minutes < 1320;
+const wrapDay = (minutes) => ((minutes % 1440) + 1440) % 1440;
+
+function savedClockStyle() {
+    try {
+        const style = localStorage.getItem(CLOCK_STYLE);
+        if (CLOCK_STYLES.includes(style)) return style;
+    } catch {
+        // Private windows can refuse storage, so the default stands
+    }
+    return 'bars';
+}
+
+function svgNode(tag, attributes) {
+    const node = document.createElementNS('http://www.w3.org/2000/svg', tag);
+    Object.entries(attributes).forEach(([name, value]) => node.setAttribute(name, value));
+    return node;
+}
+
+function clockFace() {
+    const svg = svgNode('svg', { viewBox: '-50 -50 100 100', class: 'cw-face', 'aria-hidden': 'true' });
+    svg.append(svgNode('circle', { r: 47, class: 'cw-face-rim' }));
+    for (let hour = 0; hour < 12; hour++) {
+        svg.append(svgNode('line', { y1: -40, y2: hour % 3 ? -36 : -31, transform: `rotate(${hour * 30})`, class: 'cw-face-tick' }));
+    }
+    svg.append(svgNode('line', { y2: -24, class: 'cw-face-hour' }), svgNode('line', { y2: -36, class: 'cw-face-minute' }), svgNode('circle', { r: 4, class: 'cw-face-pin' }));
+    return svg;
+}
+
+function hourLabel(hour) {
+    const date = new Date();
+    date.setHours(hour, 0, 0, 0);
+    return date.toLocaleTimeString(undefined, { hour: 'numeric' }).replace(/\s*([ap])\.?m\.?$/i, '$1').toLowerCase();
+}
+
+function buildClocks(strip, zones, style) {
+    const nodes = [];
+    if (style === 'timeline') {
+        const ruler = element('div', 'cw-tl-ruler');
+        for (let hour = 0; hour < 24; hour += 3) {
+            const tick = element('span', '', hourLabel(hour));
+            tick.style.left = `${(hour / 24) * 100}%`;
+            ruler.append(tick);
+        }
+        nodes.push(element('span', ''), ruler, element('span', ''));
+    }
+    zones.forEach(({ zone, label }) => {
+        const name = element('span', 'cw-clock-place', label || place(zone));
+        const time = element('b', 'cw-clock-time');
+        const gap = element('span', 'cw-clock-gap');
+        if (style === 'timeline') {
+            const track = element('div', 'cw-tl-track');
+            for (let hour = 0; hour < 24; hour++) track.append(element('i', ''));
+            track.append(element('b', 'cw-tl-now'));
+            const read = element('div', 'cw-tl-read');
+            read.append(time, gap);
+            [name, track, read].forEach((node) => {
+                node.dataset.zone = zone;
+                nodes.push(node);
+            });
+            return;
+        }
+        const item = element('div', 'cw-clock');
+        item.dataset.zone = zone;
+        if (style === 'bars') {
+            const head = element('div', 'cw-clock-head');
+            head.append(name, gap);
+            const day = element('div', 'cw-clock-day');
+            day.append(element('i', 'cw-clock-dot'));
+            item.append(head, time, day);
+        } else if (style === 'faces') {
+            const text = element('div', 'cw-clock-text');
+            text.append(name, time, gap);
+            item.append(clockFace(), text);
+        } else {
+            item.append(name, time, gap);
+        }
+        nodes.push(item);
+    });
+    strip.replaceChildren(...nodes);
+}
+
+function setLeft(node, fraction) {
+    const left = `${(fraction * 100).toFixed(2)}%`;
+    if (node && node.style.left !== left) node.style.left = left;
+}
+
+function setRotation(node, degrees) {
+    const value = `rotate(${degrees.toFixed(1)})`;
+    if (node && node.getAttribute('transform') !== value) node.setAttribute('transform', value);
+}
+
 function paintClocks(root, now) {
+    const bar = root.querySelector('[data-cal-clockbar]');
     const strip = root.querySelector('[data-cal-clocks]');
-    if (!strip) return;
+    if (!bar || !strip) return;
     const home = root.dataset.calHome;
     const zones = [...(home ? [{ zone: home, label: place(home) }] : []), ...parseList(root.dataset.calZones)];
-    setHidden(strip, !zones.length);
-    if (strip.childElementCount !== zones.length) {
-        strip.replaceChildren(...zones.map(({ zone, label }) => {
-            const item = element('div', 'cw-clock');
-            item.dataset.zone = zone;
-            item.append(element('span', 'cw-clock-place', label || place(zone)), element('b', 'cw-clock-time'), element('span', 'cw-clock-gap'));
-            return item;
-        }));
+    setHidden(bar, !zones.length);
+    if (!zones.length) return;
+    const style = savedClockStyle();
+    root.querySelectorAll('[data-cal-clock-style]').forEach((button) => {
+        const on = String(button.dataset.calClockStyle === style);
+        if (button.getAttribute('aria-pressed') !== on) button.setAttribute('aria-pressed', on);
+    });
+    const key = `${style}#${zones.map((item) => item.zone).join()}`;
+    if (strip.dataset.key !== key) {
+        buildClocks(strip, zones, style);
+        strip.dataset.key = key;
+        strip.dataset.style = style;
     }
+
     const today = now.toLocaleDateString(undefined, { weekday: 'short' });
-    strip.querySelectorAll('.cw-clock').forEach((item) => {
-        const zone = item.dataset.zone;
+    const here = now.getHours() * 60 + now.getMinutes();
+    zones.forEach(({ zone }) => {
+        const offset = zoneOffset(now, zone);
+        const minutes = wrapDay(here + offset);
         const day = now.toLocaleDateString(undefined, { weekday: 'short', timeZone: zone });
-        const hour = Number(new Intl.DateTimeFormat('en-US', { timeZone: zone, hour: 'numeric', hourCycle: 'h23' }).format(now));
-        setText(item.querySelector('.cw-clock-time'), clock(now, zone));
-        setText(item.querySelector('.cw-clock-gap'), `${offsetText(zoneOffset(now, zone))}${day !== today ? `, ${day}` : ''}`);
-        const night = hour < 8 || hour >= 22;
-        if (item.classList.contains('night') !== night) item.classList.toggle('night', night);
+        const nodes = [...strip.children].filter((node) => node.dataset.zone === zone);
+        const find = (selector) => nodes.map((node) => (node.matches(selector) ? node : node.querySelector(selector))).find(Boolean);
+        setText(find('.cw-clock-time'), clock(now, zone));
+        setText(find('.cw-clock-gap'), `${offsetText(offset)}${day !== today ? `, ${day}` : ''}`);
+        const night = !isDay(minutes);
+        nodes.forEach((node) => {
+            if (node.classList.contains('night') !== night) node.classList.toggle('night', night);
+        });
+
+        const dot = find('.cw-clock-dot');
+        if (dot) setLeft(dot, minutes / 1440);
+        const face = find('.cw-face');
+        if (face) {
+            setRotation(face.querySelector('.cw-face-hour'), ((minutes % 720) / 720) * 360);
+            setRotation(face.querySelector('.cw-face-minute'), ((minutes % 60) / 60) * 360);
+        }
+        const track = find('.cw-tl-track');
+        if (track) {
+            // Each cell is an hour on this device's clock, lit when it falls in the zone's work hours
+            track.querySelectorAll('i').forEach((cell, hour) => {
+                const on = isDay(wrapDay(hour * 60 + offset));
+                if (cell.classList.contains('day') !== on) cell.classList.toggle('day', on);
+            });
+            setLeft(track.querySelector('.cw-tl-now'), here / 1440);
+        }
     });
 }
+
+document.addEventListener('click', (click) => {
+    const button = click.target.closest('[data-cal-clock-style]');
+    if (!button) return;
+    try {
+        localStorage.setItem(CLOCK_STYLE, button.dataset.calClockStyle);
+    } catch {
+        // The choice then lasts until reload
+    }
+    paint();
+});
 
 function paintWeek(root) {
     const grid = root.querySelector('[data-cal-grid]');

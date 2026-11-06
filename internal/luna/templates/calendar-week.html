@@ -11,6 +11,12 @@
             <button type="button" data-cal-view="week">Week</button><button type="button" data-cal-view="list">List</button>
         </div>
     </div>
+    <div class="cw-clockbar" data-cal-clockbar hidden>
+        <div class="cw-clocks" data-cal-clocks></div>
+        <div class="cw-views cw-clockstyles" role="group" aria-label="Clock style">
+            <button type="button" data-cal-clock-style="bars">Bars</button><button type="button" data-cal-clock-style="faces">Faces</button><button type="button" data-cal-clock-style="cards">Cards</button><button type="button" data-cal-clock-style="timeline">Timeline</button>
+        </div>
+    </div>
     <div class="cw-legend">
         {{ range .Calendar.Calendars }}
         <label class="cal-c{{ .Color }}"><input type="checkbox" data-cal-toggle="{{ .Name }}"><i></i>{{ .Name }}</label>

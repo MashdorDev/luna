@@ -283,6 +283,25 @@ function buildSummary(root, data) {
     summary.replaceChildren(...parts);
 }
 
+// The all-day row (tasks, holidays) pins under the day names, so it needs their height. A grid
+// built while hidden (another group tab) measures 0, so it is measured again whenever it changes.
+const watchedHeads = new WeakMap();
+const headWatch = new ResizeObserver((entries) => entries.forEach(({ target }) => {
+    const grid = target.closest('[data-cal-grid]');
+    const value = `${target.offsetHeight}px`;
+    if (grid && grid.style.getPropertyValue('--cw-head') !== value) grid.style.setProperty('--cw-head', value);
+}));
+
+function watchHead(grid) {
+    const head = grid.querySelector('.cw-head');
+    const old = watchedHeads.get(grid);
+    if (old === head) return;
+    if (old) headWatch.unobserve(old);
+    if (head) headWatch.observe(head);
+    watchedHeads.set(grid, head);
+    grid.style.setProperty('--cw-head', `${head?.offsetHeight || 0}px`);
+}
+
 function buildWeek(root, data) {
     const home = root.dataset.calHome;
     const { days, timed, allDay, stats } = data;
@@ -355,8 +374,7 @@ function buildWeek(root, data) {
     grid.dataset.first = first;
     grid.dataset.span = span;
     grid.replaceChildren(...nodes);
-    // The all-day row (tasks, holidays) pins under the day names, so it needs their height
-    grid.style.setProperty('--cw-head', `${grid.querySelector('.cw-head')?.offsetHeight || 0}px`);
+    watchHead(grid);
     scrollWeek(root, grid, first, span);
 }
 

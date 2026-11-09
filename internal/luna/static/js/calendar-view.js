@@ -467,7 +467,8 @@ function offsetText(minutes) {
 }
 
 const CLOCK_STYLE = 'luna-calendar-clocks';
-const CLOCK_STYLES = ['bars', 'faces', 'cards', 'timeline'];
+// Bars was dropped once Cards got the same day bar; a saved "bars" falls back to Cards
+const CLOCK_STYLES = ['faces', 'cards', 'timeline'];
 // Work hours run from 8 AM to 10 PM; anything else draws as night
 const isDay = (minutes) => minutes >= 480 && minutes < 1320;
 const wrapDay = (minutes) => ((minutes % 1440) + 1440) % 1440;
@@ -479,7 +480,7 @@ function savedClockStyle() {
     } catch {
         // Private windows can refuse storage, so the default stands
     }
-    return 'bars';
+    return 'cards';
 }
 
 function svgNode(tag, attributes) {
@@ -492,9 +493,13 @@ function clockFace() {
     const svg = svgNode('svg', { viewBox: '-50 -50 100 100', class: 'cw-face', 'aria-hidden': 'true' });
     svg.append(svgNode('circle', { r: 47, class: 'cw-face-rim' }));
     for (let hour = 0; hour < 12; hour++) {
-        svg.append(svgNode('line', { y1: -40, y2: hour % 3 ? -36 : -31, transform: `rotate(${hour * 30})`, class: 'cw-face-tick' }));
+        svg.append(svgNode('line', { y1: -44, y2: hour % 3 ? -41 : -38, transform: `rotate(${hour * 30})`, class: 'cw-face-tick' }));
+        const angle = (hour * Math.PI) / 6;
+        const number = svgNode('text', { x: (31 * Math.sin(angle)).toFixed(1), y: (-31 * Math.cos(angle)).toFixed(1), class: 'cw-face-num' });
+        number.textContent = String(hour || 12);
+        svg.append(number);
     }
-    svg.append(svgNode('line', { y2: -24, class: 'cw-face-hour' }), svgNode('line', { y2: -36, class: 'cw-face-minute' }), svgNode('circle', { r: 4, class: 'cw-face-pin' }));
+    svg.append(svgNode('line', { y2: -20, class: 'cw-face-hour' }), svgNode('line', { y2: -33, class: 'cw-face-minute' }), svgNode('circle', { r: 4, class: 'cw-face-pin' }));
     return svg;
 }
 
@@ -533,18 +538,12 @@ function buildClocks(strip, zones, style) {
         }
         const item = element('div', 'cw-clock');
         item.dataset.zone = zone;
-        if (style === 'bars') {
-            const head = element('div', 'cw-clock-head');
-            head.append(name, gap);
-            const day = element('div', 'cw-clock-day');
-            day.append(element('i', 'cw-clock-dot'));
-            item.append(head, time, day);
-        } else if (style === 'faces') {
+        if (style === 'faces') {
             const text = element('div', 'cw-clock-text');
             text.append(name, time, gap);
             item.append(clockFace(), text);
         } else {
-            // The same day bar as Bars, so a card can be dragged too
+            // The zone's whole day, work hours lit, a dot for the time shown; drag it to move every clock
             const day = element('div', 'cw-clock-day');
             day.append(element('i', 'cw-clock-dot'));
             item.append(name, time, gap, day);

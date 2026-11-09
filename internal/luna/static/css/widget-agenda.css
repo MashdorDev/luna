@@ -268,12 +268,8 @@
 .cw-clock-time { color: var(--color-text-highlight); font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .cw-clock-gap { color: var(--color-text-subdue); font-size: 11px; white-space: nowrap; }
 .cw-clock.night .cw-clock-time, .cw-tl-read.night .cw-clock-time { color: var(--color-text-subdue); }
-.cw-clocks[data-style="bars"], .cw-clocks[data-style="cards"], .cw-clocks[data-style="faces"] { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; }
+.cw-clocks[data-style="cards"], .cw-clocks[data-style="faces"] { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; }
 
-/* Bars: the zone's whole day, work hours lit, a dot for now */
-.cw-clocks[data-style="bars"] .cw-clock { display: flex; flex-direction: column; gap: 4px; padding: 10px 12px; border: 1px solid var(--color-separator); border-radius: 8px; }
-.cw-clock-head { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
-.cw-clocks[data-style="bars"] .cw-clock-time { font-size: 20px; line-height: 1.2; }
 .cw-clock-day { position: relative; height: 6px; margin-top: 4px; border-radius: 3px;
   background: linear-gradient(to right, var(--cw-night) 33.333%, var(--cw-day) 33.333% 91.667%, var(--cw-night) 91.667%); }
 .cw-clock-dot { position: absolute; top: 50%; width: 10px; height: 10px; margin: -5px 0 0 -5px; border-radius: 50%; background: var(--color-primary); box-shadow: 0 0 0 2px var(--color-widget-background); }
@@ -292,8 +288,10 @@
 /* Faces: an analog dial beside the reading */
 .cw-clocks[data-style="faces"] .cw-clock { display: flex; align-items: center; gap: 10px; }
 .cw-clock-text { display: flex; flex-direction: column; min-width: 0; }
-.cw-clocks[data-style="faces"] .cw-clock-time { font-size: 15px; }
-.cw-face { width: 64px; height: 64px; flex-shrink: 0; }
+.cw-clocks[data-style="faces"] .cw-clock-time { font-size: 22px; line-height: 1.2; }
+.cw-face { width: 104px; height: 104px; flex-shrink: 0; }
+.cw-face-num { fill: var(--color-text-base); font-size: 9px; text-anchor: middle; dominant-baseline: central; font-variant-numeric: tabular-nums; pointer-events: none; }
+.cw-clock.night .cw-face-num { fill: var(--color-text-subdue); }
 .cw-face-rim { fill: var(--color-widget-background-highlight); stroke: var(--color-separator); stroke-width: 2; }
 .cw-face-tick { stroke: var(--color-text-subdue); stroke-width: 2; opacity: .5; }
 .cw-face-hour { stroke: var(--color-text-highlight); stroke-width: 5; stroke-linecap: round; }
@@ -324,6 +322,8 @@
 @media (max-width: 700px) {
     .cw-clockbar { flex-direction: column-reverse; }
     .cw-clocks { order: 0; width: 100%; }
-    .cw-clocks[data-style="bars"], .cw-clocks[data-style="cards"], .cw-clocks[data-style="faces"] { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .cw-clocks[data-style="cards"], .cw-clocks[data-style="faces"] { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .cw-face { width: 72px; height: 72px; }
+    .cw-clocks[data-style="faces"] .cw-clock-time { font-size: 16px; }
     .cw-tl-read .cw-clock-gap { display: none; }
 }

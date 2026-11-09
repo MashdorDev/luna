@@ -544,7 +544,10 @@ function buildClocks(strip, zones, style) {
             text.append(name, time, gap);
             item.append(clockFace(), text);
         } else {
-            item.append(name, time, gap);
+            // The same day bar as Bars, so a card can be dragged too
+            const day = element('div', 'cw-clock-day');
+            day.append(element('i', 'cw-clock-dot'));
+            item.append(name, time, gap, day);
         }
         nodes.push(item);
     });
@@ -625,18 +628,29 @@ function paintClocks(root, live) {
     });
 }
 
-// Dragging along a bar (the zone's own day) or the timeline (this device's day) moves every clock,
-// to the quarter hour, keeping the day already shown
-function pickFromTrack(track, x) {
+// Dragging along a bar (the zone's own day), the timeline (this device's day) or around a dial moves
+// every clock, to the quarter hour, keeping the day already shown
+function pickFromTrack(track, point) {
     const root = track.closest('[data-cal-root]');
     // A page update can rebuild the strip mid-drag and leave this bar detached
     if (!root) return false;
     const shown = pickedTimes.get(root) || new Date();
     const box = track.getBoundingClientRect();
-    const fraction = Math.min(1, Math.max(0, (x - box.left) / box.width));
-    const zone = track.classList.contains('cw-clock-day') ? track.closest('[data-zone]').dataset.zone : undefined;
+    const zone = track.classList.contains('cw-tl-track') ? undefined : track.closest('[data-zone]').dataset.zone;
     const wall = (date) => wrapDay(date.getHours() * 60 + date.getMinutes() + (zone ? zoneOffset(date, zone) : 0));
-    const target = Math.min(1425, Math.round((fraction * 1440) / 15) * 15);
+    let target;
+    if (track.classList.contains('cw-face')) {
+        // The hour hand points at a time on a 12 hour dial; morning or evening is whichever is nearer
+        // the time already shown, so circling past 12 carries on into the next half of the day
+        const turn = Math.atan2(point.clientX - (box.left + box.width / 2), (box.top + box.height / 2) - point.clientY);
+        const onDial = Math.round(((((turn / (2 * Math.PI)) + 1) % 1) * 720) / 15) * 15 % 720;
+        const now = wall(shown);
+        const gap = (minutes) => Math.min(Math.abs(minutes - now), 1440 - Math.abs(minutes - now));
+        target = gap(onDial) <= gap(onDial + 720) ? onDial : onDial + 720;
+    } else {
+        const fraction = Math.min(1, Math.max(0, (point.clientX - box.left) / box.width));
+        target = Math.min(1425, Math.round((fraction * 1440) / 15) * 15);
+    }
     // Moving by the gap in minutes is an hour off across a DST change, so check the wall clock once and
     // correct. A time the change skips keeps the first answer, so the same spot always reads the same
     const step = (date, minutes) => new Date(date.getTime() + minutes * 60000);
@@ -672,7 +686,7 @@ function keepInView(root, grid) {
 }
 
 document.addEventListener('pointerdown', (down) => {
-    const track = down.button === 0 && down.target.closest('.cw-clock-day, .cw-tl-track');
+    const track = down.button === 0 && down.target.closest('.cw-clock-day, .cw-tl-track, .cw-face');
     if (!track) return;
     down.preventDefault();
     track.classList.add('dragging');
@@ -681,9 +695,9 @@ document.addEventListener('pointerdown', (down) => {
     } catch {
         // Without capture the drag still follows while the pointer stays on the bar
     }
-    pickFromTrack(track, down.clientX);
+    pickFromTrack(track, down);
     const move = (event) => {
-        if (!pickFromTrack(track, event.clientX)) up();
+        if (!pickFromTrack(track, event)) up();
     };
     const up = () => {
         track.classList.remove('dragging');

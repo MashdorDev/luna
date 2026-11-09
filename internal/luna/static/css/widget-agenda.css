@@ -258,16 +258,17 @@
 }
 
 /* Clocks for the home zone and calendar.zones, above the legend, in four looks */
-.cw-clockbar { --cw-night: color-mix(in srgb, var(--color-text-subdue) 22%, transparent); --cw-day: color-mix(in srgb, var(--color-primary) 55%, transparent); display: flex; align-items: flex-start; gap: 12px 20px; margin-bottom: 14px; }
+.cw-clockbar { --cw-night: color-mix(in srgb, var(--color-text-subdue) 22%, transparent); --cw-day: color-mix(in srgb, var(--color-primary) 55%, transparent); display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: 8px 12px; margin-bottom: 14px; }
 .cw-clockbar[hidden] { display: none; }
-.cw-clocks { flex: 1; min-width: 0; }
+/* The clocks get a full-width row of their own under the buttons */
+.cw-clocks { order: 2; flex: 1 0 100%; min-width: 0; }
 .cw-clockstyles { flex-shrink: 0; }
 .cw-clockstyles button { padding: 3px 10px; font-size: 12px; }
 .cw-clock-place { color: var(--color-text-subdue); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .cw-clock-time { color: var(--color-text-highlight); font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .cw-clock-gap { color: var(--color-text-subdue); font-size: 11px; white-space: nowrap; }
 .cw-clock.night .cw-clock-time, .cw-tl-read.night .cw-clock-time { color: var(--color-text-subdue); }
-.cw-clocks[data-style="bars"], .cw-clocks[data-style="cards"], .cw-clocks[data-style="faces"] { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 10px; }
+.cw-clocks[data-style="bars"], .cw-clocks[data-style="cards"], .cw-clocks[data-style="faces"] { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; }
 
 /* Bars: the zone's whole day, work hours lit, a dot for now */
 .cw-clocks[data-style="bars"] .cw-clock { display: flex; flex-direction: column; gap: 4px; padding: 10px 12px; border: 1px solid var(--color-separator); border-radius: 8px; }
@@ -278,8 +279,10 @@
 .cw-clock-dot { position: absolute; top: 50%; width: 10px; height: 10px; margin: -5px 0 0 -5px; border-radius: 50%; background: var(--color-primary); box-shadow: 0 0 0 2px var(--color-widget-background); }
 
 /* Drag along a bar or the timeline to read another time in every zone */
-.cw-clock-day, .cw-tl-track { cursor: grab; touch-action: none; user-select: none; }
-.cw-clock-day.dragging, .cw-tl-track.dragging { cursor: grabbing; }
+.cw-clock-day, .cw-tl-track, .cw-face { cursor: grab; touch-action: none; user-select: none; }
+.cw-clock-day.dragging, .cw-tl-track.dragging, .cw-face.dragging { cursor: grabbing; }
+.cw-face:hover .cw-face-rim, .cw-face.dragging .cw-face-rim, .picked .cw-face-rim { stroke: var(--color-primary); }
+.cw-clocks[data-style="cards"] .cw-clock-day { margin-top: 8px; }
 .cw-clock-day::before { content: ""; position: absolute; left: 0; right: 0; top: -9px; bottom: -9px; }
 .cw-clock-day:hover .cw-clock-dot, .cw-clock-day.dragging .cw-clock-dot, .picked .cw-clock-dot { width: 16px; height: 16px; margin: -8px 0 0 -8px; background: var(--color-text-highlight); }
 .picked .cw-tl-now { background: var(--color-primary); }
@@ -290,7 +293,7 @@
 .cw-clocks[data-style="faces"] .cw-clock { display: flex; align-items: center; gap: 10px; }
 .cw-clock-text { display: flex; flex-direction: column; min-width: 0; }
 .cw-clocks[data-style="faces"] .cw-clock-time { font-size: 15px; }
-.cw-face { width: 52px; height: 52px; flex-shrink: 0; }
+.cw-face { width: 64px; height: 64px; flex-shrink: 0; }
 .cw-face-rim { fill: var(--color-widget-background-highlight); stroke: var(--color-separator); stroke-width: 2; }
 .cw-face-tick { stroke: var(--color-text-subdue); stroke-width: 2; opacity: .5; }
 .cw-face-hour { stroke: var(--color-text-highlight); stroke-width: 5; stroke-linecap: round; }
@@ -320,7 +323,7 @@
 
 @media (max-width: 700px) {
     .cw-clockbar { flex-direction: column-reverse; }
-    .cw-clocks { width: 100%; }
+    .cw-clocks { order: 0; width: 100%; }
     .cw-clocks[data-style="bars"], .cw-clocks[data-style="cards"], .cw-clocks[data-style="faces"] { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .cw-tl-read .cw-clock-gap { display: none; }
 }

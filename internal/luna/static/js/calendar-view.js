@@ -647,10 +647,28 @@ function pickFromTrack(track, x) {
     }
     picked.setSeconds(0, 0);
     pickedTimes.set(root, picked);
-    // The line on the week would show a different time from the clocks
-    closeTimeCheck();
+    // The line on the week follows the clocks, and the week scrolls to keep it in sight
+    checked = { root, start: picked };
+    const grid = root.querySelector('[data-cal-grid]');
+    if (grid) {
+        drawTimeCheck(grid, root, picked);
+        keepInView(root, grid);
+    }
     paintClocks(root, new Date());
     return true;
+}
+
+function keepInView(root, grid) {
+    const box = root.querySelector('[data-cal-week-wrap]');
+    const line = grid.querySelector('.cw-check');
+    if (!box || box.hidden || !line) return;
+    const frame = box.getBoundingClientRect();
+    const at = line.getBoundingClientRect().top;
+    const head = (grid.querySelector('.cw-head')?.offsetHeight || 0) + (grid.querySelector('.cw-corner-allday')?.offsetHeight || 0);
+    const top = Math.max(frame.top, 0) + head + 24;
+    const bottom = Math.min(frame.bottom, window.innerHeight) - 24;
+    if (at < top) box.scrollTop -= top - at;
+    else if (at > bottom) box.scrollTop += at - bottom;
 }
 
 document.addEventListener('pointerdown', (down) => {

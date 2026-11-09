@@ -377,6 +377,7 @@ function buildWeek(root, data) {
     grid.replaceChildren(...nodes);
     watchHead(grid);
     scrollWeek(root, grid, first, span);
+    if (checked?.root === root) drawTimeCheck(grid, root, checked.start);
 }
 
 // Once per page and week shown, so rebuilds at each meeting boundary keep where Dor scrolled:
@@ -628,18 +629,28 @@ function paintClocks(root, live) {
 // to the quarter hour, keeping the day already shown
 function pickFromTrack(track, x) {
     const root = track.closest('[data-cal-root]');
+    // A page update can rebuild the strip mid-drag and leave this bar detached
+    if (!root) return false;
     const shown = pickedTimes.get(root) || new Date();
     const box = track.getBoundingClientRect();
     const fraction = Math.min(1, Math.max(0, (x - box.left) / box.width));
-    const offset = track.classList.contains('cw-clock-day') ? zoneOffset(shown, track.closest('[data-zone]').dataset.zone) : 0;
-    const current = wrapDay(shown.getHours() * 60 + shown.getMinutes() + offset);
+    const zone = track.classList.contains('cw-clock-day') ? track.closest('[data-zone]').dataset.zone : undefined;
+    const wall = (date) => wrapDay(date.getHours() * 60 + date.getMinutes() + (zone ? zoneOffset(date, zone) : 0));
     const target = Math.min(1425, Math.round((fraction * 1440) / 15) * 15);
-    const picked = new Date(shown.getTime() + (target - current) * 60000);
+    // Moving by the gap in minutes is an hour off across a DST change, so check the wall clock once and
+    // correct. A time the change skips keeps the first answer, so the same spot always reads the same
+    const step = (date, minutes) => new Date(date.getTime() + minutes * 60000);
+    let picked = step(shown, target - wall(shown));
+    if (wall(picked) !== target) {
+        const fixed = step(picked, target - wall(picked));
+        if (wall(fixed) === target) picked = fixed;
+    }
     picked.setSeconds(0, 0);
     pickedTimes.set(root, picked);
     // The line on the week would show a different time from the clocks
     closeTimeCheck();
     paintClocks(root, new Date());
+    return true;
 }
 
 document.addEventListener('pointerdown', (down) => {
@@ -653,7 +664,9 @@ document.addEventListener('pointerdown', (down) => {
         // Without capture the drag still follows while the pointer stays on the bar
     }
     pickFromTrack(track, down.clientX);
-    const move = (event) => pickFromTrack(track, event.clientX);
+    const move = (event) => {
+        if (!pickFromTrack(track, event.clientX)) up();
+    };
     const up = () => {
         track.classList.remove('dragging');
         track.removeEventListener('pointermove', move);
@@ -779,7 +792,11 @@ document.addEventListener('click', (click) => {
 
 // Click an empty spot in the week to read that time, to the quarter hour, in every zone.
 // Drag the line (or press and drag with a mouse) to move it through the day and across days
+// The picked time on the week, so a rebuild of the grid (on the hour, at a meeting boundary) draws it again
+let checked = null;
+
 function closeTimeCheck() {
+    checked = null;
     document.querySelectorAll('.cw-check').forEach((node) => node.remove());
 }
 
@@ -799,10 +816,25 @@ function placeTimeCheck(column, y) {
     const minute = Math.min(first + span - 15, Math.max(first, Math.round(raw / 15) * 15));
     const [year, month, day] = column.dataset.day.split('-').map(Number);
     const start = new Date(year, month - 1, day, 0, minute);
-    const key = `${column.dataset.day}#${minute}`;
+    checked = { root, start };
+    drawTimeCheck(grid, root, start);
+    pickedTimes.set(root, start);
+    paintClocks(root, new Date());
+}
 
+function drawTimeCheck(grid, root, start) {
+    const column = grid.querySelector(`.cw-day[data-day="${dayKey(start)}"]`);
     let check = grid.querySelector('.cw-check');
-    if (check?.dataset.key === key) return;
+    if (!column) {
+        check?.remove();
+        return;
+    }
+    const first = Number(grid.dataset.first);
+    const span = Number(grid.dataset.span);
+    // Read back from the date, so a time a DST change skips draws where the card says it is
+    const minute = minutesOf(start);
+    const key = `${dayKey(start)}#${minute}`;
+    if (check?.dataset.key === key && check.parentNode === column) return;
     if (!check) check = element('div', 'cw-check');
     check.dataset.key = key;
     check.style.top = `${((minute - first) / span) * 100}%`;
@@ -815,17 +847,17 @@ function placeTimeCheck(column, y) {
         element('span', '', place(Intl.DateTimeFormat().resolvedOptions().timeZone)));
     const rows = zoneRows(root, start);
     card.append(here, rows.childNodes.length ? rows : element('div', 'cw-check-same', 'Same time in every zone'));
-    check.replaceChildren(card);
+    // Only the line is the handle; the card scrolls and clicks like the rest of the page
+    check.replaceChildren(element('div', 'cw-check-grip'), card);
     if (check.parentNode !== column) column.append(check);
-    pickedTimes.set(root, start);
-    paintClocks(root, new Date());
 }
 
 // Set while a press on the week is being handled, so the click that ends it neither closes nor re-places the line
 let pressed = false;
 document.addEventListener('pointerdown', (down) => {
     if (down.button !== 0) return;
-    const onCheck = down.target.closest('.cw-check');
+    if (down.target.closest('.cw-check-card')) return;
+    const onCheck = down.target.closest('.cw-check-grip');
     const column = down.target.closest('.cw-day');
     // A finger on the grid scrolls it, so touch places the line with a tap and drags only the line itself
     if (!column || down.target.closest('.cw-event') || (!onCheck && down.pointerType !== 'mouse')) return;
@@ -835,8 +867,14 @@ document.addEventListener('pointerdown', (down) => {
     if (!onCheck) placeTimeCheck(column, down.clientY);
     grid.querySelector('.cw-check')?.classList.add('dragging');
     // The line moves between day columns, which would drop pointer capture, so the window follows the drag
-    const move = (event) => placeTimeCheck(columnAt(grid, event.clientX), event.clientY);
-    const up = () => {
+    // Only the pointer that pressed moves the line; a second finger scrolling is left alone
+    const move = (event) => {
+        if (event.pointerId !== down.pointerId) return;
+        if (!grid.isConnected) return up(event);
+        placeTimeCheck(columnAt(grid, event.clientX), event.clientY);
+    };
+    const up = (event) => {
+        if (event.pointerId !== down.pointerId) return;
         grid.querySelector('.cw-check')?.classList.remove('dragging');
         // The click comes right after pointerup, in the same task
         setTimeout(() => {

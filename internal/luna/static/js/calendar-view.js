@@ -657,25 +657,29 @@ function pickFromTrack(track, point) {
     const box = track.getBoundingClientRect();
     const zone = track.classList.contains('cw-tl-track') ? undefined : track.closest('[data-zone]').dataset.zone;
     const wall = (date) => wrapDay(date.getHours() * 60 + date.getMinutes() + (zone ? zoneOffset(date, zone) : 0));
-    let target;
+    const now = wall(shown);
+    let shift;
     if (track.classList.contains('cw-face')) {
-        // The hour hand points at a time on a 12 hour dial; morning or evening is whichever is nearer
-        // the time already shown, so circling past 12 carries on into the next half of the day
+        // The hour hand points at a time on a 12 hour dial. The nearer of the two readings wins, as a
+        // signed move, so circling past 12 carries on into the next half of the day, and past
+        // midnight into the next day
         const turn = Math.atan2(point.clientX - (box.left + box.width / 2), (box.top + box.height / 2) - point.clientY);
         const onDial = Math.round(((((turn / (2 * Math.PI)) + 1) % 1) * 720) / 15) * 15 % 720;
-        const now = wall(shown);
-        const gap = (minutes) => Math.min(Math.abs(minutes - now), 1440 - Math.abs(minutes - now));
-        target = gap(onDial) <= gap(onDial + 720) ? onDial : onDial + 720;
+        const signed = (minutes) => wrapDay(minutes - now + 720) - 720;
+        const [a, b] = [signed(onDial), signed(onDial + 720)];
+        shift = Math.abs(a) <= Math.abs(b) ? a : b;
     } else {
+        // A bar or the timeline is one day, so the move stays inside the day shown
         const fraction = Math.min(1, Math.max(0, (point.clientX - box.left) / box.width));
-        target = Math.min(1425, Math.round((fraction * 1440) / 15) * 15);
+        shift = Math.min(1425, Math.round((fraction * 1440) / 15) * 15) - now;
     }
+    const target = wrapDay(now + shift);
     // Moving by the gap in minutes is an hour off across a DST change, so check the wall clock once and
     // correct. A time the change skips keeps the first answer, so the same spot always reads the same
     const step = (date, minutes) => new Date(date.getTime() + minutes * 60000);
-    let picked = step(shown, target - wall(shown));
+    let picked = step(shown, shift);
     if (wall(picked) !== target) {
-        const fixed = step(picked, target - wall(picked));
+        const fixed = step(picked, wrapDay(target - wall(picked) + 720) - 720);
         if (wall(fixed) === target) picked = fixed;
     }
     picked.setSeconds(0, 0);
@@ -683,9 +687,10 @@ function pickFromTrack(track, point) {
     return true;
 }
 
-// The clocks, the line on the week and the line in the list all show the picked time,
-// and the week or the page scrolls to keep the line in sight
-function showPicked(root, picked) {
+// The clocks, the line on the week and the line in the list all show the picked time, and the
+// week box scrolls to keep its line in sight. The list scrolls the page, which would pull the
+// clocks from under a drag, so it only scrolls when asked (a tap on a day, or a drag let go)
+function showPicked(root, picked, scrollList) {
     pickedTimes.set(root, picked);
     checked = { root, start: picked };
     const grid = root.querySelector('[data-cal-grid]');
@@ -693,7 +698,8 @@ function showPicked(root, picked) {
         drawTimeCheck(grid, root, picked);
         keepInView(root, grid);
     }
-    drawListCheck(root, picked)?.scrollIntoView({ block: 'nearest' });
+    const line = drawListCheck(root, picked);
+    if (scrollList) line?.scrollIntoView({ block: 'nearest' });
     paintClocks(root, new Date());
 }
 
@@ -706,7 +712,7 @@ document.addEventListener('click', (click) => {
     const shown = pickedTimes.get(root) || new Date();
     const minute = Math.round((shown.getHours() * 60 + shown.getMinutes()) / 15) * 15;
     const [year, month, day] = head.dataset.day.split('-').map(Number);
-    showPicked(root, new Date(year, month - 1, day, 0, Math.min(minute, 1425)));
+    showPicked(root, new Date(year, month - 1, day, 0, Math.min(minute, 1425)), true);
 });
 
 function keepInView(root, grid) {
@@ -718,6 +724,9 @@ function keepInView(root, grid) {
     const head = (grid.querySelector('.cw-head')?.offsetHeight || 0) + (grid.querySelector('.cw-corner-allday')?.offsetHeight || 0);
     const top = Math.max(frame.top, 0) + head + 24;
     const bottom = Math.min(frame.bottom, window.innerHeight) - 24;
+    // With the week mostly off screen there is no spot that shows the line, and chasing one flips
+    // the box back and forth on every move
+    if (top >= bottom) return;
     if (at < top) box.scrollTop -= top - at;
     else if (at > bottom) box.scrollTop += at - bottom;
 }
@@ -725,18 +734,26 @@ function keepInView(root, grid) {
 document.addEventListener('pointerdown', (down) => {
     const track = down.button === 0 && down.target.closest('.cw-clock-day, .cw-tl-track, .cw-face');
     if (!track) return;
-    down.preventDefault();
+    // A dial is a big target on a phone and lets a vertical swipe scroll the page (pan-y), so a
+    // finger only turns it once it moves and the browser has not taken the swipe for a scroll
+    const waitForMove = down.pointerType !== 'mouse' && track.classList.contains('cw-face');
+    if (!waitForMove) down.preventDefault();
     track.classList.add('dragging');
     try {
         track.setPointerCapture(down.pointerId);
     } catch {
         // Without capture the drag still follows while the pointer stays on the bar
     }
-    pickFromTrack(track, down);
+    let moved = false;
+    if (!waitForMove) pickFromTrack(track, down);
     const move = (event) => {
+        moved = true;
         if (!pickFromTrack(track, event)) up();
     };
-    const up = () => {
+    const up = (event) => {
+        // Let go: now the list may scroll to the line without moving the clocks under the pointer
+        const root = track.closest('[data-cal-root]');
+        if (event?.type === 'pointerup' && root && (moved || !waitForMove)) drawListCheck(root, pickedTimes.get(root) || new Date())?.scrollIntoView({ block: 'nearest' });
         track.classList.remove('dragging');
         track.removeEventListener('pointermove', move);
         track.removeEventListener('pointerup', up);
@@ -963,7 +980,8 @@ document.addEventListener('pointerdown', (down) => {
 
 document.addEventListener('click', (click) => {
     if (pressed) return;
-    if (click.target.closest('.cw-check, .cw-lcheck, .cw-lday, .cw-clockbar')) return;
+    // The view, week and calendar controls rebuild the week or list and redraw the line, so they keep it too
+    if (click.target.closest('.cw-check, .cw-lcheck, .cw-lday, .cw-clockbar, [data-cal-view], [data-cal-week-step], .cw-legend')) return;
     closeTimeCheck();
     // A tap on an empty spot; a mouse press already placed the line
     const column = click.target.closest('.cw-day');

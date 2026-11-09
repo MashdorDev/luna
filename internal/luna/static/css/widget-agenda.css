@@ -276,6 +276,8 @@
 
 /* Drag along a bar or the timeline to read another time in every zone */
 .cw-clock-day, .cw-tl-track, .cw-face { cursor: grab; touch-action: none; user-select: none; }
+/* A vertical swipe over a dial still scrolls the page on a phone */
+.cw-face { touch-action: pan-y; }
 .cw-clock-day.dragging, .cw-tl-track.dragging, .cw-face.dragging { cursor: grabbing; }
 .cw-face:hover .cw-face-rim, .cw-face.dragging .cw-face-rim, .picked .cw-face-rim { stroke: var(--color-primary); }
 .cw-clocks[data-style="cards"] .cw-clock-day { margin-top: 8px; }

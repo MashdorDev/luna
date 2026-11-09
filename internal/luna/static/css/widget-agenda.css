@@ -327,3 +327,12 @@
     .cw-clocks[data-style="faces"] .cw-clock-time { font-size: 16px; }
     .cw-tl-read .cw-clock-gap { display: none; }
 }
+
+/* The picked time in the list view, between the meetings it falls between */
+.cw-lcheck { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 14px; margin: 4px 0; padding: 6px 10px; border-left: 3px solid var(--color-primary); border-radius: 4px;
+    background: color-mix(in srgb, var(--color-primary) 10%, transparent); font-size: 13px; font-variant-numeric: tabular-nums; }
+.cw-lcheck > b { font-weight: 600; color: var(--color-primary); }
+.cw-lcheck .cal-dzones { display: flex; flex-wrap: wrap; gap: 4px 14px; margin: 0; }
+.cw-lcheck .cal-dzones span { display: inline-flex; gap: 5px; }
+.cw-lday[data-day] { cursor: pointer; }
+.cw-lday[data-day]:hover b { text-decoration: underline; text-underline-offset: 3px; }

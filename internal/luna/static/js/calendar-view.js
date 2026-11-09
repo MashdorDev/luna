@@ -406,6 +406,23 @@ function nowLine(now) {
     return line;
 }
 
+// The picked time in the list: a line in its day, ahead of the first meeting that starts after it,
+// with the time in every zone. Returns the line, or nothing when that day is not listed
+function drawListCheck(root, start) {
+    const list = root.querySelector('[data-cal-list]');
+    list?.querySelector('.cw-lcheck')?.remove();
+    const head = list && !list.hidden && list.querySelector(`.cw-lday[data-day="${dayKey(start)}"]`);
+    if (!head) return null;
+    let before = head.nextElementSibling;
+    while (before && !before.classList.contains('cw-lday') && !(before.dataset.start && new Date(before.dataset.start) > start)) {
+        before = before.nextElementSibling;
+    }
+    const line = element('div', 'cw-lcheck');
+    line.append(element('b', '', clock(start)), zoneRows(root, start));
+    list.insertBefore(line, before);
+    return line;
+}
+
 function buildList(root, data) {
     const list = root.querySelector('[data-cal-list]');
     const now = new Date();
@@ -413,6 +430,8 @@ function buildList(root, data) {
     data.days.forEach((day, i) => {
         const items = [...data.allDay[i].map((event) => ({ event })), ...data.timed[i]];
         const head = element('div', 'cw-lday' + (i === 0 ? ' today' : ''));
+        head.dataset.day = dayKey(day);
+        head.title = 'Show this day on the clocks';
         const label = i === 0 ? 'Today' : i === 1 ? 'Tomorrow' : day.toLocaleDateString(undefined, { weekday: 'long' });
         const title = element('b', '', `${label}, ${day.toLocaleDateString(undefined, { day: 'numeric', month: 'short' })}`);
         if (data.marks[i].length) title.append(element('span', 'cw-mark', data.marks[i].join(', ')));
@@ -427,7 +446,8 @@ function buildList(root, data) {
         items.forEach(({ event, start, end, clash }, index) => {
             if (index === nowAt) nodes.push(nowLine(now));
             const row = opener('button', `cw-lrow cal-c${event.color}${event.holiday ? ' hol' : ''}${event.task ? ' task' : ''}${end && end < now ? ' past' : ''}`, event);
-            const time = element('span', 'cw-ltime', start ? `${clock(start)} - ${clock(end)}` : event.task ? 'Due' : 'All day');
+            if (start) row.dataset.start = start.toISOString();
+            const time = element('span', 'cw-ltime', start ?`${clock(start)} - ${clock(end)}` : event.task ? 'Due' : 'All day');
             const body = element('span', 'cw-lbody');
             const name = element('b', '', event.name);
             name.dir = 'auto';
@@ -659,17 +679,35 @@ function pickFromTrack(track, point) {
         if (wall(fixed) === target) picked = fixed;
     }
     picked.setSeconds(0, 0);
+    showPicked(root, picked);
+    return true;
+}
+
+// The clocks, the line on the week and the line in the list all show the picked time,
+// and the week or the page scrolls to keep the line in sight
+function showPicked(root, picked) {
     pickedTimes.set(root, picked);
-    // The line on the week follows the clocks, and the week scrolls to keep it in sight
     checked = { root, start: picked };
     const grid = root.querySelector('[data-cal-grid]');
     if (grid) {
         drawTimeCheck(grid, root, picked);
         keepInView(root, grid);
     }
+    drawListCheck(root, picked)?.scrollIntoView({ block: 'nearest' });
     paintClocks(root, new Date());
-    return true;
 }
+
+// A day's heading in the list moves the picked time to that day, at the same time of day,
+// since the clocks only move within the day they show
+document.addEventListener('click', (click) => {
+    const head = click.target.closest('.cw-lday[data-day]');
+    if (!head) return;
+    const root = head.closest('[data-cal-root]');
+    const shown = pickedTimes.get(root) || new Date();
+    const minute = Math.round((shown.getHours() * 60 + shown.getMinutes()) / 15) * 15;
+    const [year, month, day] = head.dataset.day.split('-').map(Number);
+    showPicked(root, new Date(year, month - 1, day, 0, Math.min(minute, 1425)));
+});
 
 function keepInView(root, grid) {
     const box = root.querySelector('[data-cal-week-wrap]');
@@ -779,7 +817,10 @@ function paintWeek(root) {
         const data = weekData(root, events, shown, days);
         buildSummary(root, data);
         if (view === 'week') buildWeek(root, data);
-        else buildList(root, data);
+        else {
+            buildList(root, data);
+            if (checked?.root === root) drawListCheck(root, checked.start);
+        }
         grid.dataset.key = key;
     }
     root.querySelectorAll('.cw-event, .cw-lrow').forEach((node) => {
@@ -828,7 +869,7 @@ let checked = null;
 
 function closeTimeCheck() {
     checked = null;
-    document.querySelectorAll('.cw-check').forEach((node) => node.remove());
+    document.querySelectorAll('.cw-check, .cw-lcheck').forEach((node) => node.remove());
 }
 
 // The day column under the pointer, or the nearest one when it strays past the grid's edges
@@ -922,7 +963,7 @@ document.addEventListener('pointerdown', (down) => {
 
 document.addEventListener('click', (click) => {
     if (pressed) return;
-    if (click.target.closest('.cw-check, .cw-clockbar')) return;
+    if (click.target.closest('.cw-check, .cw-lcheck, .cw-lday, .cw-clockbar')) return;
     closeTimeCheck();
     // A tap on an empty spot; a mouse press already placed the line
     const column = click.target.closest('.cw-day');

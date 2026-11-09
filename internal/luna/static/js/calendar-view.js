@@ -560,7 +560,11 @@ function setRotation(node, degrees) {
     if (node && node.getAttribute('transform') !== value) node.setAttribute('transform', value);
 }
 
-function paintClocks(root, now) {
+// A time dragged to on a clock's bar, or picked on the week; the clocks show it until "Now"
+const pickedTimes = new WeakMap();
+
+function paintClocks(root, live) {
+    const now = pickedTimes.get(root) || live;
     const bar = root.querySelector('[data-cal-clockbar]');
     const strip = root.querySelector('[data-cal-clocks]');
     if (!bar || !strip) return;
@@ -570,6 +574,10 @@ function paintClocks(root, now) {
         .filter((item, index, all) => item.zone && all.findIndex((other) => other.zone === item.zone) === index);
     setHidden(bar, !zones.length);
     if (!zones.length) return;
+    const back = root.querySelector('[data-cal-clock-now]');
+    setHidden(back, !pickedTimes.has(root));
+    if (back && pickedTimes.has(root)) setText(back, `Back to now (showing ${now.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })})`);
+    if (bar.classList.contains('picked') !== pickedTimes.has(root)) bar.classList.toggle('picked', pickedTimes.has(root));
     const style = savedClockStyle();
     root.querySelectorAll('[data-cal-clock-style]').forEach((button) => {
         const on = String(button.dataset.calClockStyle === style);
@@ -615,6 +623,56 @@ function paintClocks(root, now) {
         }
     });
 }
+
+// Dragging along a bar (the zone's own day) or the timeline (this device's day) moves every clock,
+// to the quarter hour, keeping the day already shown
+function pickFromTrack(track, x) {
+    const root = track.closest('[data-cal-root]');
+    const shown = pickedTimes.get(root) || new Date();
+    const box = track.getBoundingClientRect();
+    const fraction = Math.min(1, Math.max(0, (x - box.left) / box.width));
+    const offset = track.classList.contains('cw-clock-day') ? zoneOffset(shown, track.closest('[data-zone]').dataset.zone) : 0;
+    const current = wrapDay(shown.getHours() * 60 + shown.getMinutes() + offset);
+    const target = Math.min(1425, Math.round((fraction * 1440) / 15) * 15);
+    const picked = new Date(shown.getTime() + (target - current) * 60000);
+    picked.setSeconds(0, 0);
+    pickedTimes.set(root, picked);
+    // The line on the week would show a different time from the clocks
+    closeTimeCheck();
+    paintClocks(root, new Date());
+}
+
+document.addEventListener('pointerdown', (down) => {
+    const track = down.button === 0 && down.target.closest('.cw-clock-day, .cw-tl-track');
+    if (!track) return;
+    down.preventDefault();
+    track.classList.add('dragging');
+    try {
+        track.setPointerCapture(down.pointerId);
+    } catch {
+        // Without capture the drag still follows while the pointer stays on the bar
+    }
+    pickFromTrack(track, down.clientX);
+    const move = (event) => pickFromTrack(track, event.clientX);
+    const up = () => {
+        track.classList.remove('dragging');
+        track.removeEventListener('pointermove', move);
+        track.removeEventListener('pointerup', up);
+        track.removeEventListener('pointercancel', up);
+    };
+    track.addEventListener('pointermove', move);
+    track.addEventListener('pointerup', up);
+    track.addEventListener('pointercancel', up);
+});
+
+document.addEventListener('click', (click) => {
+    const back = click.target.closest('[data-cal-clock-now]');
+    if (!back) return;
+    const root = back.closest('[data-cal-root]');
+    pickedTimes.delete(root);
+    closeTimeCheck();
+    paintClocks(root, new Date());
+});
 
 document.addEventListener('click', (click) => {
     const button = click.target.closest('[data-cal-clock-style]');
@@ -719,40 +777,87 @@ document.addEventListener('click', (click) => {
     paint();
 });
 
-// Click an empty spot in the week to read that time, to the quarter hour, in every zone
+// Click an empty spot in the week to read that time, to the quarter hour, in every zone.
+// Drag the line (or press and drag with a mouse) to move it through the day and across days
 function closeTimeCheck() {
     document.querySelectorAll('.cw-check').forEach((node) => node.remove());
 }
 
-document.addEventListener('click', (click) => {
-    if (click.target.closest('.cw-check')) return;
-    const column = click.target.closest('.cw-day');
-    const open = column?.querySelector('.cw-check');
-    closeTimeCheck();
-    if (!column || click.target.closest('.cw-event') || open) return;
+// The day column under the pointer, or the nearest one when it strays past the grid's edges
+function columnAt(grid, x) {
+    const columns = [...grid.querySelectorAll('.cw-day')];
+    return columns.find((column) => x < column.getBoundingClientRect().right) || columns[columns.length - 1];
+}
+
+function placeTimeCheck(column, y) {
     const grid = column.closest('[data-cal-grid]');
     const root = column.closest('[data-cal-root]');
     const first = Number(grid.dataset.first);
     const span = Number(grid.dataset.span);
     const box = column.getBoundingClientRect();
-    const raw = first + ((click.clientY - box.top) / box.height) * span;
+    const raw = first + ((y - box.top) / box.height) * span;
     const minute = Math.min(first + span - 15, Math.max(first, Math.round(raw / 15) * 15));
     const [year, month, day] = column.dataset.day.split('-').map(Number);
     const start = new Date(year, month - 1, day, 0, minute);
+    const key = `${column.dataset.day}#${minute}`;
 
-    const check = element('div', 'cw-check');
+    let check = grid.querySelector('.cw-check');
+    if (check?.dataset.key === key) return;
+    if (!check) check = element('div', 'cw-check');
+    check.dataset.key = key;
     check.style.top = `${((minute - first) / span) * 100}%`;
     const columns = [...grid.querySelectorAll('.cw-day')];
-    if (columns.indexOf(column) >= columns.length - 2) check.classList.add('flip');
-    if ((minute - first) / span > 0.8) check.classList.add('up');
+    check.classList.toggle('flip', columns.indexOf(column) >= columns.length - 2);
+    check.classList.toggle('up', (minute - first) / span > 0.8);
     const card = element('div', 'cw-check-card');
     const here = element('div', 'cw-check-here');
-    here.append(element('b', '', `${start.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric' })}, ${clock(start)}`),
+    here.append(element('b', '', `${start.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })}, ${clock(start)}`),
         element('span', '', place(Intl.DateTimeFormat().resolvedOptions().timeZone)));
     const rows = zoneRows(root, start);
     card.append(here, rows.childNodes.length ? rows : element('div', 'cw-check-same', 'Same time in every zone'));
-    check.append(card);
-    column.append(check);
+    check.replaceChildren(card);
+    if (check.parentNode !== column) column.append(check);
+    pickedTimes.set(root, start);
+    paintClocks(root, new Date());
+}
+
+// Set while a press on the week is being handled, so the click that ends it neither closes nor re-places the line
+let pressed = false;
+document.addEventListener('pointerdown', (down) => {
+    if (down.button !== 0) return;
+    const onCheck = down.target.closest('.cw-check');
+    const column = down.target.closest('.cw-day');
+    // A finger on the grid scrolls it, so touch places the line with a tap and drags only the line itself
+    if (!column || down.target.closest('.cw-event') || (!onCheck && down.pointerType !== 'mouse')) return;
+    const grid = column.closest('[data-cal-grid]');
+    down.preventDefault();
+    pressed = true;
+    if (!onCheck) placeTimeCheck(column, down.clientY);
+    grid.querySelector('.cw-check')?.classList.add('dragging');
+    // The line moves between day columns, which would drop pointer capture, so the window follows the drag
+    const move = (event) => placeTimeCheck(columnAt(grid, event.clientX), event.clientY);
+    const up = () => {
+        grid.querySelector('.cw-check')?.classList.remove('dragging');
+        // The click comes right after pointerup, in the same task
+        setTimeout(() => {
+            pressed = false;
+        });
+        window.removeEventListener('pointermove', move);
+        window.removeEventListener('pointerup', up);
+        window.removeEventListener('pointercancel', up);
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+    window.addEventListener('pointercancel', up);
+});
+
+document.addEventListener('click', (click) => {
+    if (pressed) return;
+    if (click.target.closest('.cw-check, .cw-clockbar')) return;
+    closeTimeCheck();
+    // A tap on an empty spot; a mouse press already placed the line
+    const column = click.target.closest('.cw-day');
+    if (column && !click.target.closest('.cw-event')) placeTimeCheck(column, click.clientY);
 });
 
 document.addEventListener('keydown', (key) => {

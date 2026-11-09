@@ -113,7 +113,10 @@
 
 /* A time picked on the week, shown in every zone */
 .cw-day { cursor: pointer; }
-.cw-check { position: absolute; left: -1px; right: 0; height: 2px; margin-top: -1px; background: var(--color-primary); z-index: 4; cursor: default; }
+.cw-check { position: absolute; left: -1px; right: 0; height: 2px; margin-top: -1px; background: var(--color-primary); z-index: 4; cursor: grab; touch-action: none; user-select: none; }
+/* A taller hit area than the 2px line, so it is easy to grab */
+.cw-check::before { content: ""; position: absolute; left: 0; right: 0; top: -8px; height: 18px; }
+.cw-check.dragging { cursor: grabbing; }
 .cw-check-card { position: absolute; left: 0; top: 6px; min-width: 180px; padding: 8px 10px; border: 1px solid var(--color-separator); border-radius: 8px;
     background: var(--color-widget-background); box-shadow: 0 4px 16px rgb(0 0 0 / .25); font-size: 13px; }
 .cw-check.flip .cw-check-card { left: auto; right: 0; }
@@ -273,6 +276,15 @@
 .cw-clock-day { position: relative; height: 6px; margin-top: 4px; border-radius: 3px;
   background: linear-gradient(to right, var(--cw-night) 33.333%, var(--cw-day) 33.333% 91.667%, var(--cw-night) 91.667%); }
 .cw-clock-dot { position: absolute; top: 50%; width: 10px; height: 10px; margin: -5px 0 0 -5px; border-radius: 50%; background: var(--color-primary); box-shadow: 0 0 0 2px var(--color-widget-background); }
+
+/* Drag along a bar or the timeline to read another time in every zone */
+.cw-clock-day, .cw-tl-track { cursor: grab; touch-action: none; user-select: none; }
+.cw-clock-day.dragging, .cw-tl-track.dragging { cursor: grabbing; }
+.cw-clock-day::before { content: ""; position: absolute; left: 0; right: 0; top: -9px; bottom: -9px; }
+.cw-clock-day:hover .cw-clock-dot, .cw-clock-day.dragging .cw-clock-dot, .picked .cw-clock-dot { width: 16px; height: 16px; margin: -8px 0 0 -8px; background: var(--color-text-highlight); }
+.picked .cw-tl-now { background: var(--color-primary); }
+.cw-clock-now { flex-shrink: 0; align-self: center; border-color: var(--color-primary); color: var(--color-primary); white-space: nowrap; }
+.cw-clock-now[hidden] { display: none; }
 
 /* Faces: an analog dial beside the reading */
 .cw-clocks[data-style="faces"] .cw-clock { display: flex; align-items: center; gap: 10px; }

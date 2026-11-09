@@ -343,6 +343,7 @@ function buildWeek(root, data) {
     timed.forEach((list, i) => {
         const isToday = dayKey(days[i]) === today;
         const column = element('div', 'cw-day' + (isToday ? ' today' : ''));
+        column.dataset.day = dayKey(days[i]);
         list.forEach((item) => {
             const { event } = item;
             const flags = [event.tentative && 'tent', event.changed && 'moved', item.clash && 'clash', item.to - item.from < 45 && 'short'].filter(Boolean).join(' ');
@@ -376,6 +377,7 @@ function buildWeek(root, data) {
     grid.replaceChildren(...nodes);
     watchHead(grid);
     scrollWeek(root, grid, first, span);
+    if (checked?.root === root) drawTimeCheck(grid, root, checked.start);
 }
 
 // Once per page and week shown, so rebuilds at each meeting boundary keep where Dor scrolled:
@@ -404,6 +406,23 @@ function nowLine(now) {
     return line;
 }
 
+// The picked time in the list: a line in its day, ahead of the first meeting that starts after it,
+// with the time in every zone. Returns the line, or nothing when that day is not listed
+function drawListCheck(root, start) {
+    const list = root.querySelector('[data-cal-list]');
+    list?.querySelector('.cw-lcheck')?.remove();
+    const head = list && !list.hidden && list.querySelector(`.cw-lday[data-day="${dayKey(start)}"]`);
+    if (!head) return null;
+    let before = head.nextElementSibling;
+    while (before && !before.classList.contains('cw-lday') && !(before.dataset.start && new Date(before.dataset.start) > start)) {
+        before = before.nextElementSibling;
+    }
+    const line = element('div', 'cw-lcheck');
+    line.append(element('b', '', clock(start)), zoneRows(root, start));
+    list.insertBefore(line, before);
+    return line;
+}
+
 function buildList(root, data) {
     const list = root.querySelector('[data-cal-list]');
     const now = new Date();
@@ -411,6 +430,8 @@ function buildList(root, data) {
     data.days.forEach((day, i) => {
         const items = [...data.allDay[i].map((event) => ({ event })), ...data.timed[i]];
         const head = element('div', 'cw-lday' + (i === 0 ? ' today' : ''));
+        head.dataset.day = dayKey(day);
+        head.title = 'Show this day on the clocks';
         const label = i === 0 ? 'Today' : i === 1 ? 'Tomorrow' : day.toLocaleDateString(undefined, { weekday: 'long' });
         const title = element('b', '', `${label}, ${day.toLocaleDateString(undefined, { day: 'numeric', month: 'short' })}`);
         if (data.marks[i].length) title.append(element('span', 'cw-mark', data.marks[i].join(', ')));
@@ -425,7 +446,8 @@ function buildList(root, data) {
         items.forEach(({ event, start, end, clash }, index) => {
             if (index === nowAt) nodes.push(nowLine(now));
             const row = opener('button', `cw-lrow cal-c${event.color}${event.holiday ? ' hol' : ''}${event.task ? ' task' : ''}${end && end < now ? ' past' : ''}`, event);
-            const time = element('span', 'cw-ltime', start ? `${clock(start)} - ${clock(end)}` : event.task ? 'Due' : 'All day');
+            if (start) row.dataset.start = start.toISOString();
+            const time = element('span', 'cw-ltime', start ?`${clock(start)} - ${clock(end)}` : event.task ? 'Due' : 'All day');
             const body = element('span', 'cw-lbody');
             const name = element('b', '', event.name);
             name.dir = 'auto';
@@ -465,7 +487,8 @@ function offsetText(minutes) {
 }
 
 const CLOCK_STYLE = 'luna-calendar-clocks';
-const CLOCK_STYLES = ['bars', 'faces', 'cards', 'timeline'];
+// Bars was dropped once Cards got the same day bar; a saved "bars" falls back to Cards
+const CLOCK_STYLES = ['faces', 'cards', 'timeline'];
 // Work hours run from 8 AM to 10 PM; anything else draws as night
 const isDay = (minutes) => minutes >= 480 && minutes < 1320;
 const wrapDay = (minutes) => ((minutes % 1440) + 1440) % 1440;
@@ -477,7 +500,7 @@ function savedClockStyle() {
     } catch {
         // Private windows can refuse storage, so the default stands
     }
-    return 'bars';
+    return 'cards';
 }
 
 function svgNode(tag, attributes) {
@@ -490,9 +513,13 @@ function clockFace() {
     const svg = svgNode('svg', { viewBox: '-50 -50 100 100', class: 'cw-face', 'aria-hidden': 'true' });
     svg.append(svgNode('circle', { r: 47, class: 'cw-face-rim' }));
     for (let hour = 0; hour < 12; hour++) {
-        svg.append(svgNode('line', { y1: -40, y2: hour % 3 ? -36 : -31, transform: `rotate(${hour * 30})`, class: 'cw-face-tick' }));
+        svg.append(svgNode('line', { y1: -44, y2: hour % 3 ? -41 : -38, transform: `rotate(${hour * 30})`, class: 'cw-face-tick' }));
+        const angle = (hour * Math.PI) / 6;
+        const number = svgNode('text', { x: (31 * Math.sin(angle)).toFixed(1), y: (-31 * Math.cos(angle)).toFixed(1), class: 'cw-face-num' });
+        number.textContent = String(hour || 12);
+        svg.append(number);
     }
-    svg.append(svgNode('line', { y2: -24, class: 'cw-face-hour' }), svgNode('line', { y2: -36, class: 'cw-face-minute' }), svgNode('circle', { r: 4, class: 'cw-face-pin' }));
+    svg.append(svgNode('line', { y2: -20, class: 'cw-face-hour' }), svgNode('line', { y2: -33, class: 'cw-face-minute' }), svgNode('circle', { r: 4, class: 'cw-face-pin' }));
     return svg;
 }
 
@@ -531,18 +558,15 @@ function buildClocks(strip, zones, style) {
         }
         const item = element('div', 'cw-clock');
         item.dataset.zone = zone;
-        if (style === 'bars') {
-            const head = element('div', 'cw-clock-head');
-            head.append(name, gap);
-            const day = element('div', 'cw-clock-day');
-            day.append(element('i', 'cw-clock-dot'));
-            item.append(head, time, day);
-        } else if (style === 'faces') {
+        if (style === 'faces') {
             const text = element('div', 'cw-clock-text');
             text.append(name, time, gap);
             item.append(clockFace(), text);
         } else {
-            item.append(name, time, gap);
+            // The zone's whole day, work hours lit, a dot for the time shown; drag it to move every clock
+            const day = element('div', 'cw-clock-day');
+            day.append(element('i', 'cw-clock-dot'));
+            item.append(name, time, gap, day);
         }
         nodes.push(item);
     });
@@ -559,7 +583,11 @@ function setRotation(node, degrees) {
     if (node && node.getAttribute('transform') !== value) node.setAttribute('transform', value);
 }
 
-function paintClocks(root, now) {
+// A time dragged to on a clock's bar, or picked on the week; the clocks show it until "Now"
+const pickedTimes = new WeakMap();
+
+function paintClocks(root, live) {
+    const now = pickedTimes.get(root) || live;
     const bar = root.querySelector('[data-cal-clockbar]');
     const strip = root.querySelector('[data-cal-clocks]');
     if (!bar || !strip) return;
@@ -569,6 +597,10 @@ function paintClocks(root, now) {
         .filter((item, index, all) => item.zone && all.findIndex((other) => other.zone === item.zone) === index);
     setHidden(bar, !zones.length);
     if (!zones.length) return;
+    const back = root.querySelector('[data-cal-clock-now]');
+    setHidden(back, !pickedTimes.has(root));
+    if (back && pickedTimes.has(root)) setText(back, `Back to now (showing ${now.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })})`);
+    if (bar.classList.contains('picked') !== pickedTimes.has(root)) bar.classList.toggle('picked', pickedTimes.has(root));
     const style = savedClockStyle();
     root.querySelectorAll('[data-cal-clock-style]').forEach((button) => {
         const on = String(button.dataset.calClockStyle === style);
@@ -614,6 +646,132 @@ function paintClocks(root, now) {
         }
     });
 }
+
+// Dragging along a bar (the zone's own day), the timeline (this device's day) or around a dial moves
+// every clock, to the quarter hour, keeping the day already shown
+function pickFromTrack(track, point) {
+    const root = track.closest('[data-cal-root]');
+    // A page update can rebuild the strip mid-drag and leave this bar detached
+    if (!root) return false;
+    const shown = pickedTimes.get(root) || new Date();
+    const box = track.getBoundingClientRect();
+    const zone = track.classList.contains('cw-tl-track') ? undefined : track.closest('[data-zone]').dataset.zone;
+    const wall = (date) => wrapDay(date.getHours() * 60 + date.getMinutes() + (zone ? zoneOffset(date, zone) : 0));
+    const now = wall(shown);
+    let shift;
+    if (track.classList.contains('cw-face')) {
+        // The hour hand points at a time on a 12 hour dial. The nearer of the two readings wins, as a
+        // signed move, so circling past 12 carries on into the next half of the day, and past
+        // midnight into the next day
+        const turn = Math.atan2(point.clientX - (box.left + box.width / 2), (box.top + box.height / 2) - point.clientY);
+        const onDial = Math.round(((((turn / (2 * Math.PI)) + 1) % 1) * 720) / 15) * 15 % 720;
+        const signed = (minutes) => wrapDay(minutes - now + 720) - 720;
+        const [a, b] = [signed(onDial), signed(onDial + 720)];
+        shift = Math.abs(a) <= Math.abs(b) ? a : b;
+    } else {
+        // A bar or the timeline is one day, so the move stays inside the day shown
+        const fraction = Math.min(1, Math.max(0, (point.clientX - box.left) / box.width));
+        shift = Math.min(1425, Math.round((fraction * 1440) / 15) * 15) - now;
+    }
+    const target = wrapDay(now + shift);
+    // Moving by the gap in minutes is an hour off across a DST change, so check the wall clock once and
+    // correct. A time the change skips keeps the first answer, so the same spot always reads the same
+    const step = (date, minutes) => new Date(date.getTime() + minutes * 60000);
+    let picked = step(shown, shift);
+    if (wall(picked) !== target) {
+        const fixed = step(picked, wrapDay(target - wall(picked) + 720) - 720);
+        if (wall(fixed) === target) picked = fixed;
+    }
+    picked.setSeconds(0, 0);
+    showPicked(root, picked);
+    return true;
+}
+
+// The clocks, the line on the week and the line in the list all show the picked time, and the
+// week box scrolls to keep its line in sight. The list scrolls the page, which would pull the
+// clocks from under a drag, so it only scrolls when asked (a tap on a day, or a drag let go)
+function showPicked(root, picked, scrollList) {
+    pickedTimes.set(root, picked);
+    checked = { root, start: picked };
+    const grid = root.querySelector('[data-cal-grid]');
+    if (grid) {
+        drawTimeCheck(grid, root, picked);
+        keepInView(root, grid);
+    }
+    const line = drawListCheck(root, picked);
+    if (scrollList) line?.scrollIntoView({ block: 'nearest' });
+    paintClocks(root, new Date());
+}
+
+// A day's heading in the list moves the picked time to that day, at the same time of day,
+// since the clocks only move within the day they show
+document.addEventListener('click', (click) => {
+    const head = click.target.closest('.cw-lday[data-day]');
+    if (!head) return;
+    const root = head.closest('[data-cal-root]');
+    const shown = pickedTimes.get(root) || new Date();
+    const minute = Math.round((shown.getHours() * 60 + shown.getMinutes()) / 15) * 15;
+    const [year, month, day] = head.dataset.day.split('-').map(Number);
+    showPicked(root, new Date(year, month - 1, day, 0, Math.min(minute, 1425)), true);
+});
+
+function keepInView(root, grid) {
+    const box = root.querySelector('[data-cal-week-wrap]');
+    const line = grid.querySelector('.cw-check');
+    if (!box || box.hidden || !line) return;
+    const frame = box.getBoundingClientRect();
+    const at = line.getBoundingClientRect().top;
+    const head = (grid.querySelector('.cw-head')?.offsetHeight || 0) + (grid.querySelector('.cw-corner-allday')?.offsetHeight || 0);
+    const top = Math.max(frame.top, 0) + head + 24;
+    const bottom = Math.min(frame.bottom, window.innerHeight) - 24;
+    // With the week mostly off screen there is no spot that shows the line, and chasing one flips
+    // the box back and forth on every move
+    if (top >= bottom) return;
+    if (at < top) box.scrollTop -= top - at;
+    else if (at > bottom) box.scrollTop += at - bottom;
+}
+
+document.addEventListener('pointerdown', (down) => {
+    const track = down.button === 0 && down.target.closest('.cw-clock-day, .cw-tl-track, .cw-face');
+    if (!track) return;
+    // A dial is a big target on a phone and lets a vertical swipe scroll the page (pan-y), so a
+    // finger only turns it once it moves and the browser has not taken the swipe for a scroll
+    const waitForMove = down.pointerType !== 'mouse' && track.classList.contains('cw-face');
+    if (!waitForMove) down.preventDefault();
+    track.classList.add('dragging');
+    try {
+        track.setPointerCapture(down.pointerId);
+    } catch {
+        // Without capture the drag still follows while the pointer stays on the bar
+    }
+    let moved = false;
+    if (!waitForMove) pickFromTrack(track, down);
+    const move = (event) => {
+        moved = true;
+        if (!pickFromTrack(track, event)) up();
+    };
+    const up = (event) => {
+        // Let go: now the list may scroll to the line without moving the clocks under the pointer
+        const root = track.closest('[data-cal-root]');
+        if (event?.type === 'pointerup' && root && (moved || !waitForMove)) drawListCheck(root, pickedTimes.get(root) || new Date())?.scrollIntoView({ block: 'nearest' });
+        track.classList.remove('dragging');
+        track.removeEventListener('pointermove', move);
+        track.removeEventListener('pointerup', up);
+        track.removeEventListener('pointercancel', up);
+    };
+    track.addEventListener('pointermove', move);
+    track.addEventListener('pointerup', up);
+    track.addEventListener('pointercancel', up);
+});
+
+document.addEventListener('click', (click) => {
+    const back = click.target.closest('[data-cal-clock-now]');
+    if (!back) return;
+    const root = back.closest('[data-cal-root]');
+    pickedTimes.delete(root);
+    closeTimeCheck();
+    paintClocks(root, new Date());
+});
 
 document.addEventListener('click', (click) => {
     const button = click.target.closest('[data-cal-clock-style]');
@@ -676,7 +834,10 @@ function paintWeek(root) {
         const data = weekData(root, events, shown, days);
         buildSummary(root, data);
         if (view === 'week') buildWeek(root, data);
-        else buildList(root, data);
+        else {
+            buildList(root, data);
+            if (checked?.root === root) drawListCheck(root, checked.start);
+        }
         grid.dataset.key = key;
     }
     root.querySelectorAll('.cw-event, .cw-lrow').forEach((node) => {
@@ -718,6 +879,119 @@ document.addEventListener('click', (click) => {
     paint();
 });
 
+// Click an empty spot in the week to read that time, to the quarter hour, in every zone.
+// Drag the line (or press and drag with a mouse) to move it through the day and across days
+// The picked time on the week, so a rebuild of the grid (on the hour, at a meeting boundary) draws it again
+let checked = null;
+
+function closeTimeCheck() {
+    checked = null;
+    document.querySelectorAll('.cw-check, .cw-lcheck').forEach((node) => node.remove());
+}
+
+// The day column under the pointer, or the nearest one when it strays past the grid's edges
+function columnAt(grid, x) {
+    const columns = [...grid.querySelectorAll('.cw-day')];
+    return columns.find((column) => x < column.getBoundingClientRect().right) || columns[columns.length - 1];
+}
+
+function placeTimeCheck(column, y) {
+    const grid = column.closest('[data-cal-grid]');
+    const root = column.closest('[data-cal-root]');
+    const first = Number(grid.dataset.first);
+    const span = Number(grid.dataset.span);
+    const box = column.getBoundingClientRect();
+    const raw = first + ((y - box.top) / box.height) * span;
+    const minute = Math.min(first + span - 15, Math.max(first, Math.round(raw / 15) * 15));
+    const [year, month, day] = column.dataset.day.split('-').map(Number);
+    const start = new Date(year, month - 1, day, 0, minute);
+    checked = { root, start };
+    drawTimeCheck(grid, root, start);
+    pickedTimes.set(root, start);
+    paintClocks(root, new Date());
+}
+
+function drawTimeCheck(grid, root, start) {
+    const column = grid.querySelector(`.cw-day[data-day="${dayKey(start)}"]`);
+    let check = grid.querySelector('.cw-check');
+    if (!column) {
+        check?.remove();
+        return;
+    }
+    const first = Number(grid.dataset.first);
+    const span = Number(grid.dataset.span);
+    // Read back from the date, so a time a DST change skips draws where the card says it is
+    const minute = minutesOf(start);
+    const key = `${dayKey(start)}#${minute}`;
+    if (check?.dataset.key === key && check.parentNode === column) return;
+    if (!check) check = element('div', 'cw-check');
+    check.dataset.key = key;
+    check.style.top = `${((minute - first) / span) * 100}%`;
+    const columns = [...grid.querySelectorAll('.cw-day')];
+    check.classList.toggle('flip', columns.indexOf(column) >= columns.length - 2);
+    check.classList.toggle('up', (minute - first) / span > 0.8);
+    const card = element('div', 'cw-check-card');
+    const here = element('div', 'cw-check-here');
+    here.append(element('b', '', `${start.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })}, ${clock(start)}`),
+        element('span', '', place(Intl.DateTimeFormat().resolvedOptions().timeZone)));
+    const rows = zoneRows(root, start);
+    card.append(here, rows.childNodes.length ? rows : element('div', 'cw-check-same', 'Same time in every zone'));
+    // Only the line is the handle; the card scrolls and clicks like the rest of the page
+    check.replaceChildren(element('div', 'cw-check-grip'), card);
+    if (check.parentNode !== column) column.append(check);
+}
+
+// Set while a press on the week is being handled, so the click that ends it neither closes nor re-places the line
+let pressed = false;
+document.addEventListener('pointerdown', (down) => {
+    if (down.button !== 0) return;
+    if (down.target.closest('.cw-check-card')) return;
+    const onCheck = down.target.closest('.cw-check-grip');
+    const column = down.target.closest('.cw-day');
+    // A finger on the grid scrolls it, so touch places the line with a tap and drags only the line itself
+    if (!column || down.target.closest('.cw-event') || (!onCheck && down.pointerType !== 'mouse')) return;
+    const grid = column.closest('[data-cal-grid]');
+    down.preventDefault();
+    pressed = true;
+    if (!onCheck) placeTimeCheck(column, down.clientY);
+    grid.querySelector('.cw-check')?.classList.add('dragging');
+    // The line moves between day columns, which would drop pointer capture, so the window follows the drag
+    // Only the pointer that pressed moves the line; a second finger scrolling is left alone
+    const move = (event) => {
+        if (event.pointerId !== down.pointerId) return;
+        if (!grid.isConnected) return up(event);
+        placeTimeCheck(columnAt(grid, event.clientX), event.clientY);
+    };
+    const up = (event) => {
+        if (event.pointerId !== down.pointerId) return;
+        grid.querySelector('.cw-check')?.classList.remove('dragging');
+        // The click comes right after pointerup, in the same task
+        setTimeout(() => {
+            pressed = false;
+        });
+        window.removeEventListener('pointermove', move);
+        window.removeEventListener('pointerup', up);
+        window.removeEventListener('pointercancel', up);
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+    window.addEventListener('pointercancel', up);
+});
+
+document.addEventListener('click', (click) => {
+    if (pressed) return;
+    // The view, week and calendar controls rebuild the week or list and redraw the line, so they keep it too
+    if (click.target.closest('.cw-check, .cw-lcheck, .cw-lday, .cw-clockbar, [data-cal-view], [data-cal-week-step], .cw-legend')) return;
+    closeTimeCheck();
+    // A tap on an empty spot; a mouse press already placed the line
+    const column = click.target.closest('.cw-day');
+    if (column && !click.target.closest('.cw-event')) placeTimeCheck(column, click.clientY);
+});
+
+document.addEventListener('keydown', (key) => {
+    if (key.key === 'Escape') closeTimeCheck();
+});
+
 export function paint() {
     document.querySelectorAll('.ck-agenda[data-cal-root]').forEach(paintAgenda);
     document.querySelectorAll('.cw[data-cal-root]').forEach(paintWeek);
@@ -754,6 +1028,26 @@ function parseList(text) {
     } catch {
         return [];
     }
+}
+
+// The same time in each zone that matters, checked against the device's own clock
+function zoneRows(root, start, end) {
+    const home = root?.dataset.calHome;
+    const zones = [{ zone: home, label: place(home || '') }, ...parseList(root?.dataset.calZones)];
+    const seen = new Set([`${clock(start)}|${dayKey(start)}`]);
+    const rows = element('div', 'cal-dzones');
+    zones.forEach(({ zone, label }) => {
+        if (!zone) return;
+        const day = start.toLocaleDateString('en-CA', { timeZone: zone });
+        const key = `${clock(start, zone)}|${day}`;
+        if (seen.has(key)) return;
+        seen.add(key);
+        const shift = day === dayKey(start) ? '' : day > dayKey(start) ? ', next day' : ', day before';
+        const row = element('span');
+        row.append(element('b', '', label), `${end ? `${clock(start, zone)} - ${clock(end, zone)}` : clock(start, zone)}${shift}`);
+        rows.append(row);
+    });
+    return rows;
 }
 
 function rootEvents(root) {
@@ -954,21 +1248,7 @@ function openDetails(event, root) {
         dialog.dataset.end = event.end;
         nodes.push(left);
 
-        // The same meeting in each zone that matters, checked against the device's own clock
-        const zones = [{ zone: home, label: place(home || '') }, ...parseList(root?.dataset.calZones)];
-        const seen = new Set([`${clock(start)}|${dayKey(start)}`]);
-        const rows = element('div', 'cal-dzones');
-        zones.forEach(({ zone, label }) => {
-            if (!zone) return;
-            const day = start.toLocaleDateString('en-CA', { timeZone: zone });
-            const key = `${clock(start, zone)}|${day}`;
-            if (seen.has(key)) return;
-            seen.add(key);
-            const shift = day === dayKey(start) ? '' : day > dayKey(start) ? ', next day' : ', day before';
-            const row = element('span');
-            row.append(element('b', '', label), `${clock(start, zone)} - ${clock(end, zone)}${shift}`);
-            rows.append(row);
-        });
+        const rows = zoneRows(root, start, end);
         if (rows.childNodes.length) nodes.push(rows);
     }
 

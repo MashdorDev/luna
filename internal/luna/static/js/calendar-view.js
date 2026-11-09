@@ -343,6 +343,7 @@ function buildWeek(root, data) {
     timed.forEach((list, i) => {
         const isToday = dayKey(days[i]) === today;
         const column = element('div', 'cw-day' + (isToday ? ' today' : ''));
+        column.dataset.day = dayKey(days[i]);
         list.forEach((item) => {
             const { event } = item;
             const flags = [event.tentative && 'tent', event.changed && 'moved', item.clash && 'clash', item.to - item.from < 45 && 'short'].filter(Boolean).join(' ');
@@ -718,6 +719,46 @@ document.addEventListener('click', (click) => {
     paint();
 });
 
+// Click an empty spot in the week to read that time, to the quarter hour, in every zone
+function closeTimeCheck() {
+    document.querySelectorAll('.cw-check').forEach((node) => node.remove());
+}
+
+document.addEventListener('click', (click) => {
+    if (click.target.closest('.cw-check')) return;
+    const column = click.target.closest('.cw-day');
+    const open = column?.querySelector('.cw-check');
+    closeTimeCheck();
+    if (!column || click.target.closest('.cw-event') || open) return;
+    const grid = column.closest('[data-cal-grid]');
+    const root = column.closest('[data-cal-root]');
+    const first = Number(grid.dataset.first);
+    const span = Number(grid.dataset.span);
+    const box = column.getBoundingClientRect();
+    const raw = first + ((click.clientY - box.top) / box.height) * span;
+    const minute = Math.min(first + span - 15, Math.max(first, Math.round(raw / 15) * 15));
+    const [year, month, day] = column.dataset.day.split('-').map(Number);
+    const start = new Date(year, month - 1, day, 0, minute);
+
+    const check = element('div', 'cw-check');
+    check.style.top = `${((minute - first) / span) * 100}%`;
+    const columns = [...grid.querySelectorAll('.cw-day')];
+    if (columns.indexOf(column) >= columns.length - 2) check.classList.add('flip');
+    if ((minute - first) / span > 0.8) check.classList.add('up');
+    const card = element('div', 'cw-check-card');
+    const here = element('div', 'cw-check-here');
+    here.append(element('b', '', `${start.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric' })}, ${clock(start)}`),
+        element('span', '', place(Intl.DateTimeFormat().resolvedOptions().timeZone)));
+    const rows = zoneRows(root, start);
+    card.append(here, rows.childNodes.length ? rows : element('div', 'cw-check-same', 'Same time in every zone'));
+    check.append(card);
+    column.append(check);
+});
+
+document.addEventListener('keydown', (key) => {
+    if (key.key === 'Escape') closeTimeCheck();
+});
+
 export function paint() {
     document.querySelectorAll('.ck-agenda[data-cal-root]').forEach(paintAgenda);
     document.querySelectorAll('.cw[data-cal-root]').forEach(paintWeek);
@@ -754,6 +795,26 @@ function parseList(text) {
     } catch {
         return [];
     }
+}
+
+// The same time in each zone that matters, checked against the device's own clock
+function zoneRows(root, start, end) {
+    const home = root?.dataset.calHome;
+    const zones = [{ zone: home, label: place(home || '') }, ...parseList(root?.dataset.calZones)];
+    const seen = new Set([`${clock(start)}|${dayKey(start)}`]);
+    const rows = element('div', 'cal-dzones');
+    zones.forEach(({ zone, label }) => {
+        if (!zone) return;
+        const day = start.toLocaleDateString('en-CA', { timeZone: zone });
+        const key = `${clock(start, zone)}|${day}`;
+        if (seen.has(key)) return;
+        seen.add(key);
+        const shift = day === dayKey(start) ? '' : day > dayKey(start) ? ', next day' : ', day before';
+        const row = element('span');
+        row.append(element('b', '', label), `${end ? `${clock(start, zone)} - ${clock(end, zone)}` : clock(start, zone)}${shift}`);
+        rows.append(row);
+    });
+    return rows;
 }
 
 function rootEvents(root) {
@@ -954,21 +1015,7 @@ function openDetails(event, root) {
         dialog.dataset.end = event.end;
         nodes.push(left);
 
-        // The same meeting in each zone that matters, checked against the device's own clock
-        const zones = [{ zone: home, label: place(home || '') }, ...parseList(root?.dataset.calZones)];
-        const seen = new Set([`${clock(start)}|${dayKey(start)}`]);
-        const rows = element('div', 'cal-dzones');
-        zones.forEach(({ zone, label }) => {
-            if (!zone) return;
-            const day = start.toLocaleDateString('en-CA', { timeZone: zone });
-            const key = `${clock(start, zone)}|${day}`;
-            if (seen.has(key)) return;
-            seen.add(key);
-            const shift = day === dayKey(start) ? '' : day > dayKey(start) ? ', next day' : ', day before';
-            const row = element('span');
-            row.append(element('b', '', label), `${clock(start, zone)} - ${clock(end, zone)}${shift}`);
-            rows.append(row);
-        });
+        const rows = zoneRows(root, start, end);
         if (rows.childNodes.length) nodes.push(rows);
     }
 
